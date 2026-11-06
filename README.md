@@ -1,34 +1,33 @@
-# ClearSword
+# AGX-RW-iOS-PoC
 
-## Overview
+A fixed-target iOS PoC for bringing ClearSword kernel read/write to A18 before adding AGX work.
 
-A DarkSword Kernel exploit C port
+## Target
 
-I tried to keep it as close to the original as possible, but had to do a few changes to make it work in earlier iOS versions.
-These changes and personal modifications will be denoted by `NOTE` comments.
-I've added line comments to basically every line of the entire exploit, denoting what each line is supposed to be doing.
+| Device | Identifier | iOS | Build |
+| --- | --- | --- | --- |
+| iPhone 16 Pro Max | iPhone17,2 | 18.6.2 | 22G100 |
 
-Write-up eta s0n. RIP to this great bug.
+The app refuses to run on other targets. Offsets are fixed for this build.
 
-## CVE
+## Status
 
-CVE-2025-43520 "Darksword" - race condition in `cluster_write_contig`/`cluster_read_contig` 
-## Building
+The ClearSword base uses Cyanide's A18 `pe_v3` flow: 2 GB wired-page staging, one physical-page hunt, and socket reoccupation on pages already found by the race.
 
-### Build IPA
+The path reached the socket handoff on this target, but stable KRW is not confirmed. That run panicked in raw ICMPv6 filter handling after a failed read. The transport now restores and verifies the full filter snapshot after each operation. A later bounded run missed acquisition, so the fix has not completed a live KRW run yet.
 
-```bash
-make ipa
-```
+AGX firmware R/W is not implemented.
 
-### Build binary
+## Run
 
-```bash
-make binary
-```
+Open `clearsword.xcodeproj`, select your development team, and run it on the target device. The PoC starts once when the app opens.
+
+This race can panic or reboot the device. Reboot before another run if the app shows **Reboot required**.
 
 ## Credits
 
-* Apple for the bug
-* [wh1te4ever](https://github.com/wh1te4ever) for so_background_thread trick and offsets
-* Whoever leaked the chain
+- [ClearSword](https://github.com/TheRealClarity/ClearSword) by Clarity
+- [Cyanide](https://github.com/kolbicz/Cyanide) by Kolbicz for the A18 `pe_v3` path
+- DarkSword and CVE-2025-43520
+
+Licensed under the GNU AGPL v3 because this port includes Cyanide-derived code.

