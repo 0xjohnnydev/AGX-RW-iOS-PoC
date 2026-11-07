@@ -23,6 +23,15 @@ Only this device and build have been tested.
 | `--gfx-write-control` | Writes a marker through DropMDSID, checks it through the CPU alias, then restores the changed fields. |
 | `--gfx-write-panic` | Writes through DropMDSID to the panic target. [Panic](evidence/panics/panic-full-2026-10-26-051348.0002.ips) |
 
+The linked report is from the iPhone17,2 on 22G100. It records a GFX data
+abort in `agx_scheduler` after the scheduler-pointer high word became
+`0x41414141`.
+
+The macOS authenticated-call, PAC-reuse, and protected-TTBR1 tests have not
+been ported here. The other modes above are controls or readback tests and do
+not deliberately panic the phone. ClearSword can also panic during acquisition,
+but those failures are not AGX read/write evidence.
+
 `--acquire-only` passed twice in a row on iPhone17,2. The Metal self-test and
 `--gfx-write-control` pass. The read modes still need another device run after
 the latest ClearSword changes.
