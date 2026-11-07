@@ -1,8 +1,7 @@
 # AGX R/W iOS PoC
 
-AGX firmware read/write on A18 and A18 Pro iPhones running iOS 18.6.2
-build 22G100. ClearSword `pe_v3` provides the kernel read/write transport.
-Published in case it helps with SPTM research.
+AGX firmware read/write on an iPhone 16 Pro Max running iOS 18.6.2 build
+22G100. ClearSword `pe_v3` provides the kernel read/write transport.
 
 ## PoCs
 
@@ -25,22 +24,15 @@ ClearSword prepares the kernel transport, and AGX firmware performs the GFX
 virtual source reads and target writes. This is not standalone physical
 read/write or an SPTM bypass.
 
-## Hardware
+## Tested target
 
-The included profile is for iOS 18.6.2 build 22G100:
+| Hardware | Identifier | iOS | Build |
+| --- | --- | --- | --- |
+| iPhone 16 Pro Max | iPhone17,2 | 18.6.2 | 22G100 |
 
-| Hardware | Identifier | Status |
-| --- | --- | --- |
-| iPhone 16 Pro | iPhone17,1 | Static only |
-| iPhone 16 Pro Max | iPhone17,2 | Works on hardware |
-| iPhone 16 | iPhone17,3 | Static only |
-| iPhone 16 Plus | iPhone17,4 | Static only |
-
-`Static only` means the profile is enabled but the PoC has not run on that
-hardware. Apple's 22G100 IPSWs contain byte-identical release kernelcaches and
-G17P firmware images for all four rows. The versioned ClearSword structure
+This is the only hardware configuration tested. The ClearSword KRW structure
 offsets in `clearsword/utils.c` follow Dopamine 3's ClearSword/libjailbreak
-values, with the additional A18 post-acquisition walk used by this PoC.
+values, with the additional A18 post-acquisition walk used by this port.
 
 The AGX kernel vtables and firmware addresses in `clearsword/agx.m` are a
 22G100 G17P profile. They are build and firmware specific, not universal
