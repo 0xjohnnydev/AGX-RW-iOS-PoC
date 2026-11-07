@@ -3,90 +3,48 @@
 AGX firmware read/write PoC for iPhone 16 Pro Max on iOS 18.6.2 (22G100),
 using ClearSword `pe_v3` for kernel read/write.
 
-## Target
-
-| Device | Identifier | iOS | Build |
-| --- | --- | --- | --- |
-| iPhone 16 Pro Max | iPhone17,2 | 18.6.2 | 22G100 |
-
-Only this device and build have been tested.
+Tested only on iPhone17,2 (iPhone 16 Pro Max), iOS 18.6.2 (22G100).
 
 ## Modes
 
 | Mode | Description |
 | --- | --- |
-| default | Snapshots the current task's 16 KiB root table twice and copies the snapshot through Metal. |
-| `--acquire-only` | Stops after ClearSword acquisition and the kernel slide/proc/task/pmap checks. |
-| `--agx-self-test` | Tests normal shared-buffer Metal read/write without running ClearSword. |
-| `--gfx-read-control` | Runs the device-control copyout path with a fixed firmware source. |
-| `--gfx-read <gfx-va>` | Reads an aligned 64-bit value from the mapped main-firmware range. |
-| `--gfx-write-control` | Writes a marker through DropMDSID, checks it through the CPU alias, then restores the changed fields. |
-| `--gfx-write-panic` | Writes through DropMDSID to the panic target. [Panic](evidence/panics/panic-full-2026-10-26-051348.0002.ips) |
+| default | Copies two snapshots of the task's 16 KiB root table through Metal. |
+| `--acquire-only` | Acquires KRW and validates the kernel objects. |
+| `--agx-self-test` | Tests normal shared-buffer Metal R/W without ClearSword. |
+| `--gfx-read-control` | Reads a fixed firmware value through device-control copyout. |
+| `--gfx-read <gfx-va>` | Reads an aligned 64-bit GFX firmware address. |
+| `--gfx-write-control` | Writes and verifies a marker through DropMDSID, then restores it. |
+| `--gfx-write-panic` | Writes through DropMDSID to the panic target. [Write panic report](evidence/panics/panic-full-2026-10-26-051348.0002.ips) |
+| `--gfx-auth-call-control` | Relocates and calls a PAC-signed callback through `BLRAAZ` with object zero. |
+| `--gfx-auth-call-panic` | Calls it with controlled object `0x200000000`. [Authenticated-call panic report](evidence/panics/panic-full-2026-11-07-151326.0002.ips) |
+| `--gfx-pac-reuse-control` | Relocates two signed power callbacks through compatible call sites. |
+| `--gfx-pac-reuse` | Reuses signed power and active MBI callbacks and verifies their source slots. |
+| `--micro-ppl-ttbr1-control` | Resolves the scratch page and validates the protected leaf-PTE slot without writing it. |
+| `--micro-ppl-ttbr1-panic` | Attempts to change that protected leaf PTE. [Protected-PTE panic report](evidence/panics/panic-full-2026-11-07-151028.0002.ips) |
 
-The linked report is from the iPhone17,2 on 22G100. It records a GFX data
-abort in `agx_scheduler` after the scheduler-pointer high word became
-`0x41414141`.
+Panic evidence from the target device:
 
-The macOS authenticated-call, PAC-reuse, and protected-TTBR1 tests have not
-been ported here. The other modes above are controls or readback tests and do
-not deliberately panic the phone. ClearSword can also panic during acquisition,
-but those failures are not AGX read/write evidence.
+- Write: GFX data abort after the scheduler-pointer high word became `0x41414141`.
+- Auth call: `agfaRemotePowerKick` received the controlled `0x200000000` object.
+- Protected PTE: `iss=0x4f`, `far=0xfffffc0001fc8404`, at the firmware PTE
+  store. The read-only PTE faults before the later SAPT transaction reached by
+  the macOS test.
 
-`--acquire-only` passed twice in a row on iPhone17,2. The Metal self-test and
-`--gfx-write-control` pass. The read modes still need another device run after
-the latest ClearSword changes.
+ClearSword acquisition can also panic, but those failures are not AGX test
+evidence.
+
+After the first successful acquisition, the app parks KRW in `launchd` for
+reuse until reboot. The self-test and non-panic control modes pass on the target.
 
 This is GFX virtual read/write, not a physical-memory primitive or an SPTM
 bypass.
 
 ## Offsets
 
-ClearSword offsets are in `clearsword/utils.c`. The common structure offsets
-come from Dopamine 3; the A18 post-acquisition walk is specific to this port.
-
-The AGX vtables and firmware addresses in `clearsword/agx.m` target the 22G100
-G17P kernel and firmware. `STATIC_RIPCBINFO` in `clearsword/poc.c` is also tied
-to 22G100. Update both for another device or build.
-
-## Build
-
-Open `clearsword.xcodeproj`, select a development team, and build the
-`clearsword` scheme for a physical device.
-
-Unsigned build check:
-
-```sh
-xcodebuild -project clearsword.xcodeproj -scheme clearsword -sdk iphoneos \
-  -configuration Release CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
-```
-
-Command-line build:
-
-```sh
-make binary
-```
-
-## Run
-
-The app starts in the default mode. To select another mode:
-
-```sh
-xcrun devicectl device process launch --console --terminate-existing \
-  --device <UDID> com.0xjohnnydev.agxrwios -- --acquire-only
-```
-
-Replace `--acquire-only` with another mode from the table above. The explicit
-read form takes an address:
-
-```sh
-xcrun devicectl device process launch --console --terminate-existing \
-  --device <UDID> com.0xjohnnydev.agxrwios -- \
-  --gfx-read 0xfffffc0000000400
-```
-
-ClearSword can panic or reboot the phone. After a successful KRW run, reboot
-before trying again because the modified sockets remain pinned.
-`--gfx-write-panic` intentionally panics the device.
+ClearSword offsets are in `clearsword/utils.c`; common structure offsets come
+from Dopamine 3. AGX constants in `clearsword/agx.m` and `STATIC_RIPCBINFO` in
+`clearsword/poc.c` are specific to the 22G100 G17P target.
 
 ## Credits
 

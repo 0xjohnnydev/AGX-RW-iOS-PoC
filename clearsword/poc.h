@@ -4,8 +4,6 @@
 #include "agx.h"
 #include "common.h"
 
-int clearsword_run(void);
-int clearsword_run_mode(agx_test_mode_t mode);
 int clearsword_run_test(agx_test_mode_t mode, uint64_t argument);
 
 #endif /* poc_h */

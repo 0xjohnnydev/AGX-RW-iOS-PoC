@@ -12,6 +12,7 @@
 		14D8BB8376E91BD7C775E159 /* surface.c in Sources */ = {isa = PBXBuildFile; fileRef = 50220649C1D637D4B8CE4319 /* surface.c */; };
 		1B074F411B8BFDBB9B4E9CA7 /* ViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 791E74F4AC854B1B5CDE848D /* ViewController.m */; };
 		2A02F52ACBF9D3BE65497B68 /* phys_oob.c in Sources */ = {isa = PBXBuildFile; fileRef = A62B381EC8AF23F5BDE8B047 /* phys_oob.c */; };
+		2A02F52ACBF9D3BE65497B69 /* persistence.m in Sources */ = {isa = PBXBuildFile; fileRef = A62B381EC8AF23F5BDE8B049 /* persistence.m */; };
 		5114BB8C54323711FCB6515C /* poc.c in Sources */ = {isa = PBXBuildFile; fileRef = 66523C376B8878833DF6DF89 /* poc.c */; };
 		53933820B8F19F46EE97643F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = C5347CB361B3381BDA0E71CB /* LaunchScreen.storyboard */; };
 		67493B3C884C52218BDB713B /* SceneDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 6FC15EEEF308DB4F358F9160 /* SceneDelegate.m */; };
@@ -45,6 +46,7 @@
 		565CE3493A1889F72902329A /* ViewController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = ViewController.h; sourceTree = "<group>"; };
 		66523C376B8878833DF6DF89 /* poc.c */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.c; path = poc.c; sourceTree = "<group>"; };
 		69B8BE4263BE4CBA7D0206FA /* phys_oob.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = phys_oob.h; sourceTree = "<group>"; };
+		69B8BE4263BE4CBA7D0206FB /* persistence.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = persistence.h; sourceTree = "<group>"; };
 		6FC15EEEF308DB4F358F9160 /* SceneDelegate.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = SceneDelegate.m; sourceTree = "<group>"; };
 		791E74F4AC854B1B5CDE848D /* ViewController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = ViewController.m; sourceTree = "<group>"; };
 		7C100B452F70D4A800EC7936 /* clearsword.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = clearsword.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -53,6 +55,7 @@
 		96EC7658BE6ECF101FA04DEA /* SceneDelegate.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = SceneDelegate.h; sourceTree = "<group>"; };
 		A49BE08DA86B6B7C0BCFA300 /* free_thread.c */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.c; path = free_thread.c; sourceTree = "<group>"; };
 		A62B381EC8AF23F5BDE8B047 /* phys_oob.c */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.c; path = phys_oob.c; sourceTree = "<group>"; };
+		A62B381EC8AF23F5BDE8B049 /* persistence.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = persistence.m; sourceTree = "<group>"; };
 		ADDB69A29C9B0346639ED2AD /* AppDelegate.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = AppDelegate.h; sourceTree = "<group>"; };
 		BBBA435003EA44398494B2CC /* Base */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		CD091808F7552F9C649F29BA /* poc.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = poc.h; sourceTree = "<group>"; };
@@ -92,6 +95,8 @@
 				0E8509663004E33FA9B5B407 /* main.m */,
 				A62B381EC8AF23F5BDE8B047 /* phys_oob.c */,
 				69B8BE4263BE4CBA7D0206FA /* phys_oob.h */,
+				A62B381EC8AF23F5BDE8B049 /* persistence.m */,
+				69B8BE4263BE4CBA7D0206FB /* persistence.h */,
 				66523C376B8878833DF6DF89 /* poc.c */,
 				CD091808F7552F9C649F29BA /* poc.h */,
 				170E7ADA216C4DE216D0207D /* socket.c */,
@@ -196,6 +201,7 @@
 				107B4DD734D34618905E2034 /* krw.c in Sources */,
 				8BFBBAA5C9A910C126F12853 /* main.m in Sources */,
 				2A02F52ACBF9D3BE65497B68 /* phys_oob.c in Sources */,
+				2A02F52ACBF9D3BE65497B69 /* persistence.m in Sources */,
 				5114BB8C54323711FCB6515C /* poc.c in Sources */,
 				F748D2961EA37857D52262F4 /* socket.c in Sources */,
 				7CB8412C2F98300F003C6D53 /* kmem.c in Sources */,
@@ -246,6 +252,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/vendor";
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -255,6 +262,8 @@
 					IOKit,
 					"-framework",
 					Metal,
+					"-lcompression",
+					"-lsrd",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.0xjohnnydev.agxrwios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -284,6 +293,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/vendor";
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -293,6 +303,8 @@
 					IOKit,
 					"-framework",
 					Metal,
+					"-lcompression",
+					"-lsrd",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.0xjohnnydev.agxrwios;
 				PRODUCT_NAME = "$(TARGET_NAME)";

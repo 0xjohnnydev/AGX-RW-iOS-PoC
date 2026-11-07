@@ -7,7 +7,7 @@ CFNumberRef CFNUM(uint64_t value) {
     return CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &value);
 }
 
-IOSurfaceRef create_surface_with_address(mach_vm_address_t address, mach_vm_size_t size) {
+IOSurfaceRef cs_create_surface_with_address(mach_vm_address_t address, mach_vm_size_t size) {
     CFMutableDictionaryRef properties = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFNumberRef address_number = CFNUM(address);
     CFNumberRef size_number = CFNUM(size);
@@ -23,7 +23,7 @@ IOSurfaceRef create_surface_with_address(mach_vm_address_t address, mach_vm_size
     return surface;  // caller owns
 }
 
-kern_return_t create_physically_contiguous_mapping(mach_port_t* port_out, mach_vm_address_t* address_out, mach_vm_size_t size) {
+kern_return_t cs_create_physically_contiguous_mapping(mach_port_t* port_out, mach_vm_address_t* address_out, mach_vm_size_t size) {
     kern_return_t kr = KERN_SUCCESS;
 
     CFMutableDictionaryRef dict = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
@@ -80,8 +80,8 @@ static kern_return_t reserve_surfaces(void) {
     return KERN_SUCCESS;
 }
 
-kern_return_t surface_mlock(mach_vm_address_t address, mach_vm_size_t size) {
-    IOSurfaceRef surface = create_surface_with_address(address, size);
+kern_return_t cs_surface_mlock(mach_vm_address_t address, mach_vm_size_t size) {
+    IOSurfaceRef surface = cs_create_surface_with_address(address, size);
     if (surface == NULL) return KERN_FAILURE;
     kern_return_t kr = reserve_surfaces();
     if (kr != KERN_SUCCESS) {
@@ -95,7 +95,7 @@ kern_return_t surface_mlock(mach_vm_address_t address, mach_vm_size_t size) {
     return KERN_SUCCESS;
 }
 
-void surface_munlock(mach_vm_address_t address) {
+void cs_surface_munlock(mach_vm_address_t address) {
     for (size_t idx = 0; idx < g_ctx.mlock_surfaces_count; idx++) {
         if (g_ctx.mlock_surfaces[idx].address == address && g_ctx.mlock_surfaces[idx].surface != NULL) {
             CFRelease(g_ctx.mlock_surfaces[idx].surface);
@@ -115,7 +115,7 @@ size_t surface_release_oldest(size_t count) {
     return count;
 }
 
-void surface_munlock_all(void) {
+void cs_surface_munlock_all(void) {
     while (g_ctx.mlock_surfaces_count != 0) {
         CFRelease(g_ctx.mlock_surfaces[--g_ctx.mlock_surfaces_count].surface);
     }

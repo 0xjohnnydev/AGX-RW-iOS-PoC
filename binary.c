@@ -26,6 +26,12 @@ int main(int argc, char** argv) {
     return clearsword_run_test(mode, argument) == 0 ? 0 : 1;
 
 usage:
-        fprintf(stderr, "usage: %s [--agx-self-test|--acquire-only|--gfx-read-control|--gfx-read <gfx-va>|--gfx-write-control|--gfx-write-panic]\n", argv[0]);
-        return 2;
+    fprintf(stderr,
+            "usage: %s [--agx-self-test|--acquire-only|--gfx-read-control|"
+            "--gfx-read <gfx-va>|--gfx-write-control|--gfx-write-panic|"
+            "--gfx-auth-call-control|--gfx-auth-call-panic|"
+            "--gfx-pac-reuse-control|--gfx-pac-reuse|"
+            "--micro-ppl-ttbr1-control|--micro-ppl-ttbr1-panic]\n",
+            argv[0]);
+    return 2;
 }

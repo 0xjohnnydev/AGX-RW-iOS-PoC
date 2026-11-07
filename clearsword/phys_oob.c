@@ -7,9 +7,9 @@
 #include "surface.h"
 
 // creates physically contiguous mapping in Purplegfxmem and sets marker to it
-kern_return_t initialize_physical_read_write(mach_vm_size_t contiguous_mapping_size) {
+kern_return_t cs_initialize_physical_read_write(mach_vm_size_t contiguous_mapping_size) {
     g_ctx.pc_size = contiguous_mapping_size;
-    kern_return_t kr = create_physically_contiguous_mapping(&g_ctx.pc_object, &g_ctx.pc_address, g_ctx.pc_size);
+    kern_return_t kr = cs_create_physically_contiguous_mapping(&g_ctx.pc_object, &g_ctx.pc_address, g_ctx.pc_size);
     if (kr != KERN_SUCCESS) {
         LOG_ERR("create_physically_contiguous_mapping: %s (%d)", mach_error_string(kr), kr);
         g_ctx.pc_size = 0;

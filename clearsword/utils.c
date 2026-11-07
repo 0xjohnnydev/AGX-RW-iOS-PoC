@@ -78,7 +78,7 @@ void* reverse_memmem(const void* haystack, size_t haystack_len, const void* need
     return NULL;
 }
 
-int offsets_init(void) {
+int cs_offsets_init(void) {
     char version[32] = {};
     char build[32] = {};
     size_t version_len = sizeof(version);
@@ -135,7 +135,7 @@ static bool create_target_file(char* path) {
     return ok;
 }
 
-void init_target_file(void) {
+void cs_init_target_file(void) {
     // original does calloc, we've already allocated it in the global context, so set both to 0
     memset(g_ctx.read_file_path, 0, sizeof(g_ctx.read_file_path));
     memset(g_ctx.write_file_path, 0, sizeof(g_ctx.write_file_path));

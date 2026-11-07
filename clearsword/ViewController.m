@@ -75,7 +75,7 @@ static void appendLog(const char* line) {
       dispatch_async(dispatch_get_main_queue(), ^{
         NSString* title;
         if (result == 0) {
-            title = selfTestOnly ? @"AGX R/W ready" : (testMode == AGX_TEST_ACQUIRE_ONLY ? @"KRW acquired — reboot" : @"KRW + AGX ready");
+            title = selfTestOnly ? @"AGX R/W ready" : (testMode == AGX_TEST_ACQUIRE_ONLY ? @"KRW ready for this boot" : @"KRW + AGX ready");
         } else {
             title = result == -2 ? @"Reboot required" : @"Retry";
         }
