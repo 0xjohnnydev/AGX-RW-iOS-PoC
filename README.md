@@ -1,9 +1,7 @@
 # AGX R/W iOS PoC
 
-AGX firmware read/write PoC for iPhone 16 Pro Max on iOS 18.6.2 (22G100),
-using ClearSword `pe_v3` for kernel read/write.
-
-Tested only on iPhone17,2 (iPhone 16 Pro Max), iOS 18.6.2 (22G100).
+AGX firmware read/write PoC using ClearSword `pe_v3` for kernel read/write,
+tested only on iPhone17,2 (iPhone 16 Pro Max) running iOS 18.6.2 (22G100).
 
 ## Modes
 
