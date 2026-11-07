@@ -3,8 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "clearsword/agx.h"
-#include "clearsword/poc.h"
+#include "agx.h"
+#include "poc.h"
 
 int main(int argc, char** argv) {
     if (argc == 2 && strcmp(argv[1], "--agx-self-test") == 0) {

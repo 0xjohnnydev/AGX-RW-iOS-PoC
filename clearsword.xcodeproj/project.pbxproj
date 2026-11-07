@@ -73,11 +73,9 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		09E5CEB25560F0C7DFFE400B /* clearsword */ = {
+		09E5CEB25560F0C7DFFE400B /* app */ = {
 			isa = PBXGroup;
 			children = (
-				0A6A3CDA35A0000000000003 /* agx.h */,
-				0A6A3CDA35A0000000000002 /* agx.m */,
 				ADDB69A29C9B0346639ED2AD /* AppDelegate.h */,
 				20718702C2ACE7CF715FB0D1 /* AppDelegate.m */,
 				21C69EE724DFCD7E93D39500 /* Info.plist */,
@@ -85,18 +83,30 @@
 				6FC15EEEF308DB4F358F9160 /* SceneDelegate.m */,
 				565CE3493A1889F72902329A /* ViewController.h */,
 				791E74F4AC854B1B5CDE848D /* ViewController.m */,
-				7CB8412A2F98300F003C6D53 /* kmem.h */,
-				7CB8412B2F98300F003C6D53 /* kmem.c */,
+				0E8509663004E33FA9B5B407 /* main.m */,
+				08070BCA531F26020159C17C /* Assets.xcassets */,
+				777BC0381422C5F40EDAA48D /* Main.storyboard */,
+				C5347CB361B3381BDA0E71CB /* LaunchScreen.storyboard */,
+			);
+			path = app;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000001 /* src */ = {
+			isa = PBXGroup;
+			children = (
+				0A6A3CDA35A0000000000003 /* agx.h */,
+				0A6A3CDA35A0000000000002 /* agx.m */,
 				2953D0CFE7937FA876B2B292 /* common.h */,
 				A49BE08DA86B6B7C0BCFA300 /* free_thread.c */,
 				0BBE7649F4B58B1F5C446D67 /* free_thread.h */,
+				7CB8412B2F98300F003C6D53 /* kmem.c */,
+				7CB8412A2F98300F003C6D53 /* kmem.h */,
 				000AF855BC29918070D1B04E /* krw.c */,
 				2A411D364EA6F1BF73AE76E6 /* krw.h */,
-				0E8509663004E33FA9B5B407 /* main.m */,
-				A62B381EC8AF23F5BDE8B047 /* phys_oob.c */,
-				69B8BE4263BE4CBA7D0206FA /* phys_oob.h */,
 				A62B381EC8AF23F5BDE8B049 /* persistence.m */,
 				69B8BE4263BE4CBA7D0206FB /* persistence.h */,
+				A62B381EC8AF23F5BDE8B047 /* phys_oob.c */,
+				69B8BE4263BE4CBA7D0206FA /* phys_oob.h */,
 				66523C376B8878833DF6DF89 /* poc.c */,
 				CD091808F7552F9C649F29BA /* poc.h */,
 				170E7ADA216C4DE216D0207D /* socket.c */,
@@ -105,18 +115,16 @@
 				15C0F89F0CC5EFA23D88A4BF /* surface.h */,
 				2553835ED30A5B1197DB7CEE /* utils.c */,
 				EFD0C58614904D11A2727FBE /* utils.h */,
-				08070BCA531F26020159C17C /* Assets.xcassets */,
-				777BC0381422C5F40EDAA48D /* Main.storyboard */,
-				C5347CB361B3381BDA0E71CB /* LaunchScreen.storyboard */,
 			);
-			path = clearsword;
+			path = src;
 			sourceTree = "<group>";
 		};
 		7C100B3C2F70D4A800EC7936 = {
 			isa = PBXGroup;
 			children = (
 				7C100B462F70D4A800EC7936 /* Products */,
-				09E5CEB25560F0C7DFFE400B /* clearsword */,
+				09E5CEB25560F0C7DFFE400B /* app */,
+				A00000000000000000000001 /* src */,
 			);
 			sourceTree = "<group>";
 		};
@@ -244,7 +252,8 @@
 					"CLEAR_SWORD_APP=1",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = clearsword/Info.plist;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/src";
+				INFOPLIST_FILE = app/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -285,7 +294,8 @@
 					"CLEAR_SWORD_APP=1",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = clearsword/Info.plist;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/src";
+				INFOPLIST_FILE = app/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

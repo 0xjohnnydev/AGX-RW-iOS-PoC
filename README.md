@@ -40,9 +40,9 @@ bypass.
 
 ## Offsets
 
-ClearSword offsets are in `clearsword/utils.c`; common structure offsets come
-from Dopamine 3. AGX constants in `clearsword/agx.m` and `STATIC_RIPCBINFO` in
-`clearsword/poc.c` are specific to the 22G100 G17P target.
+ClearSword offsets are in `src/utils.c`; common structure offsets come from
+Dopamine 3. AGX constants in `src/agx.m` and `STATIC_RIPCBINFO` in `src/poc.c`
+are specific to the 22G100 G17P target.
 
 ## Credits
 
