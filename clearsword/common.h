@@ -57,8 +57,6 @@ typedef struct offsets {
     uint64_t inpcb_inp_list_le_next;
     uint64_t inpcb_inp_pcbinfo;
     uint64_t inpcb_inp_socket;
-    uint64_t inpcbinfo_ipi_zone;
-    uint64_t zone_view_name;
     uint64_t socket_so_count;
     uint64_t socket_so_background_thread;
     uint64_t thread_t_ro;
@@ -117,6 +115,9 @@ typedef struct pe_context {
 
     uint64_t kernel_base;
     uint64_t kernel_slide;
+    uint64_t self_proc;
+    uint64_t self_task;
+    uint64_t self_pmap;
 
     mach_port_t socket_ports[MAX_SOCKETS_COUNT];  // save output mach port from fileport_makeport
     uint64_t socket_pcb_ids[MAX_SOCKETS_COUNT];   // save pcb gencnt on this array

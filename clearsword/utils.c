@@ -10,6 +10,20 @@
 #include <unistd.h>
 
 static poc_log_handler_t g_log_handler;
+static FILE* g_log_file;
+static bool g_log_file_opened;
+
+static void open_log_file(void) {
+    if (g_log_file_opened) return;
+    g_log_file_opened = true;
+
+    char directory[PATH_MAX] = {};
+    if (confstr(_CS_DARWIN_USER_TEMP_DIR, directory, sizeof(directory)) == 0) return;
+    char path[PATH_MAX] = {};
+    if (snprintf(path, sizeof(path), "%s/clearsword.log", directory) >= (int)sizeof(path)) return;
+    g_log_file = fopen(path, "w");
+    if (g_log_file) setvbuf(g_log_file, NULL, _IOLBF, 0);
+}
 
 void poc_set_log_handler(poc_log_handler_t handler) {
     g_log_handler = handler;
@@ -22,7 +36,10 @@ void poc_log(const char* prefix, const char* format, ...) {
     vsnprintf(message, sizeof(message), format, args);
     va_end(args);
 
+    open_log_file();
     fprintf(stderr, "%s%s\n", prefix, message);
+    fflush(stderr);
+    if (g_log_file) fprintf(g_log_file, "%s%s\n", prefix, message);
     if (g_log_handler) {
         char line[1100];
         snprintf(line, sizeof(line), "%s%s", prefix, message);
@@ -69,8 +86,6 @@ int offsets_init(void) {
     g_offsets.inpcb_inp_pcbinfo = 0x38;
     g_offsets.inpcb_inp_socket = 0x40;
     g_offsets.inpcb_icmp6filt = 0x148;
-    g_offsets.inpcbinfo_ipi_zone = 0x68;
-    g_offsets.zone_view_name = 0x10;
     g_offsets.socket_so_count = 0x254;
     g_offsets.socket_so_background_thread = 0x2b0;
     g_offsets.thread_t_ro = 0x3f0;

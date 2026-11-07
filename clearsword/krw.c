@@ -98,11 +98,24 @@ static bool early_kwrite32bytes_checked(uint64_t where, const void* write_buf) {
     return true;
 }
 
-bool early_kwrite64_checked(uint64_t where, uint64_t what) {
+bool early_kwrite_checked(uint64_t where, const void* what, size_t size) {
+    if (what == NULL || size == 0 || size > EARLY_KRW_LENGTH) return false;
     uint8_t write_buf[EARLY_KRW_LENGTH];
     if (!early_kread_checked(where, write_buf, sizeof(write_buf))) return false;
-    memcpy(write_buf, &what, sizeof(what));
+    memcpy(write_buf, what, size);
     return early_kwrite32bytes_checked(where, write_buf);
+}
+
+bool early_kwrite16_checked(uint64_t where, uint16_t what) {
+    return early_kwrite_checked(where, &what, sizeof(what));
+}
+
+bool early_kwrite32_checked(uint64_t where, uint32_t what) {
+    return early_kwrite_checked(where, &what, sizeof(what));
+}
+
+bool early_kwrite64_checked(uint64_t where, uint64_t what) {
+    return early_kwrite_checked(where, &what, sizeof(what));
 }
 
 bool krw_park_transport(void) {

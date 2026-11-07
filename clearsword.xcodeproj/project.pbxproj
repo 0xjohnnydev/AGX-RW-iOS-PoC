@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0A6A3CDA35A0000000000001 /* agx.m in Sources */ = {isa = PBXBuildFile; fileRef = 0A6A3CDA35A0000000000002 /* agx.m */; };
 		107B4DD734D34618905E2034 /* krw.c in Sources */ = {isa = PBXBuildFile; fileRef = 000AF855BC29918070D1B04E /* krw.c */; };
 		14D8BB8376E91BD7C775E159 /* surface.c in Sources */ = {isa = PBXBuildFile; fileRef = 50220649C1D637D4B8CE4319 /* surface.c */; };
 		1B074F411B8BFDBB9B4E9CA7 /* ViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 791E74F4AC854B1B5CDE848D /* ViewController.m */; };
@@ -25,6 +26,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0A6A3CDA35A0000000000002 /* agx.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = agx.m; sourceTree = "<group>"; };
+		0A6A3CDA35A0000000000003 /* agx.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = agx.h; sourceTree = "<group>"; };
 		000AF855BC29918070D1B04E /* krw.c */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.c; path = krw.c; sourceTree = "<group>"; };
 		08070BCA531F26020159C17C /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		0BBE7649F4B58B1F5C446D67 /* free_thread.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = free_thread.h; sourceTree = "<group>"; };
@@ -70,6 +73,8 @@
 		09E5CEB25560F0C7DFFE400B /* clearsword */ = {
 			isa = PBXGroup;
 			children = (
+				0A6A3CDA35A0000000000003 /* agx.h */,
+				0A6A3CDA35A0000000000002 /* agx.m */,
 				ADDB69A29C9B0346639ED2AD /* AppDelegate.h */,
 				20718702C2ACE7CF715FB0D1 /* AppDelegate.m */,
 				21C69EE724DFCD7E93D39500 /* Info.plist */,
@@ -183,6 +188,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0A6A3CDA35A0000000000001 /* agx.m in Sources */,
 				D03ED623AE191389D4ABF30F /* AppDelegate.m in Sources */,
 				67493B3C884C52218BDB713B /* SceneDelegate.m in Sources */,
 				1B074F411B8BFDBB9B4E9CA7 /* ViewController.m in Sources */,
@@ -247,6 +253,8 @@
 					IOSurface,
 					"-framework",
 					IOKit,
+					"-framework",
+					Metal,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.0xjohnnydev.agxrwios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -283,6 +291,8 @@
 					IOSurface,
 					"-framework",
 					IOKit,
+					"-framework",
+					Metal,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.0xjohnnydev.agxrwios;
 				PRODUCT_NAME = "$(TARGET_NAME)";

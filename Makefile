@@ -2,11 +2,13 @@ TARGET			= clearsword
 BUILD_CONFIG 	= Release
 
 CLANG 			= clang -isysroot "$(shell xcrun --show-sdk-path --sdk iphoneos)"
+CODESIGN		= codesign
 ARCH 			= -arch arm64
-FRAMEWORKS		= -framework IOKit -framework Foundation -framework IOSurface
+FRAMEWORKS		= -framework IOKit -framework Foundation -framework IOSurface -framework Metal
 C_FLAGS 		= -I./$(TARGET)/ -I./$(TARGET)/include
-BINARY_FLAGS	= -mios-version-min=18.6
+BINARY_FLAGS	= -mios-version-min=18.6 -fobjc-arc
 SOURCES			= $(TARGET)/*.c
+OBJC_SOURCES	= $(TARGET)/agx.m
 
 .PHONY: all clean binary debug_binary runner ios_app ios_ipa clean_ios_app ipa
 
@@ -22,13 +24,13 @@ ipa:
 	zip -r9 $(TARGET).ipa Payload
 
 binary:
-	$(CLANG) $(C_FLAGS) $(BINARY_FLAGS) $(ARCH) $(FRAMEWORKS) -o $(TARGET).bin binary.c $(SOURCES)
+	$(CLANG) $(C_FLAGS) $(BINARY_FLAGS) $(ARCH) $(FRAMEWORKS) -o $(TARGET).bin binary.c $(SOURCES) $(OBJC_SOURCES)
 	strip $(TARGET).bin
-	ldid -Hsha1 -S $(TARGET).bin
+	$(CODESIGN) --force --sign - $(TARGET).bin
 
 debug_binary:
-	$(CLANG) $(C_FLAGS) -DDEBUG -g $(BINARY_FLAGS) $(ARCH) $(FRAMEWORKS) -o $(TARGET)-debug.bin binary.c $(SOURCES)
-	ldid -Sent.xml $(TARGET)-debug.bin
+	$(CLANG) $(C_FLAGS) -DDEBUG -g $(BINARY_FLAGS) $(ARCH) $(FRAMEWORKS) -o $(TARGET)-debug.bin binary.c $(SOURCES) $(OBJC_SOURCES)
+	$(CODESIGN) --force --sign - --entitlements ent.xml $(TARGET)-debug.bin
 
 runner: debug_binary
 	ssh -p2222 root@localhost "rm -rf /var/jb/var/mobile/poc"
