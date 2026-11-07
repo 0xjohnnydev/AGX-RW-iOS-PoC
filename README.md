@@ -21,7 +21,7 @@ Only this device and build have been tested.
 | `--gfx-read-control` | Runs the device-control copyout path with a fixed firmware source. |
 | `--gfx-read <gfx-va>` | Reads an aligned 64-bit value from the mapped main-firmware range. |
 | `--gfx-write-control` | Writes a marker through DropMDSID, checks it through the CPU alias, then restores the changed fields. |
-| `--gfx-write-panic` | Writes through DropMDSID to the panic target. |
+| `--gfx-write-panic` | Writes through DropMDSID to the panic target. [Panic](evidence/panics/panic-full-2026-10-26-051348.0002.ips) |
 
 `--acquire-only` passed twice in a row on iPhone17,2. The Metal self-test and
 `--gfx-write-control` pass. The read modes still need another device run after
