@@ -13,6 +13,20 @@ static poc_log_handler_t g_log_handler;
 static FILE* g_log_file;
 static bool g_log_file_opened;
 
+static const char* const g_supported_devices[] = {
+    "iPhone17,1",
+    "iPhone17,2",
+    "iPhone17,3",
+    "iPhone17,4",
+};
+
+static bool device_is_supported(const char* machine) {
+    for (size_t i = 0; i < sizeof(g_supported_devices) / sizeof(g_supported_devices[0]); i++) {
+        if (strcmp(machine, g_supported_devices[i]) == 0) return true;
+    }
+    return false;
+}
+
 static void open_log_file(void) {
     if (g_log_file_opened) return;
     g_log_file_opened = true;
@@ -76,12 +90,14 @@ int offsets_init(void) {
 
     const char* machine = get_device_machine();
     LOG("target: %s, iOS %s (%s)", machine, version, build);
-    if (strcmp(machine, TARGET_DEVICE) != 0 || strcmp(version, TARGET_VERSION) != 0 || strcmp(build, TARGET_BUILD) != 0) {
-        LOG_ERR("supported target is %s on iOS %s (%s)", TARGET_DEVICE, TARGET_VERSION, TARGET_BUILD);
+    if (!device_is_supported(machine) || strcmp(version, TARGET_VERSION) != 0 || strcmp(build, TARGET_BUILD) != 0) {
+        LOG_ERR("supported targets are iPhone17,1 through iPhone17,4 on iOS %s (%s)", TARGET_VERSION, TARGET_BUILD);
         return -1;
     }
 
-    // Fixed offsets for iPhone17,2 on 18.6.2 (22G100).
+    // Dopamine 3.0.13 (5b1d2c1) ClearSword/libjailbreak offsets for Darwin
+    // 24.6, plus the A18 post-acquisition walk used by this PoC. All four
+    // supported IPSWs contain the same 22G100 release kernelcache.
     g_offsets.inpcb_inp_list_le_next = 0x20;
     g_offsets.inpcb_inp_pcbinfo = 0x38;
     g_offsets.inpcb_inp_socket = 0x40;

@@ -26,7 +26,6 @@ void poc_log(const char* prefix, const char* format, ...) __attribute__((format(
 #endif
 
 #define MAX_SOCKETS_COUNT 0x5800
-#define TARGET_DEVICE "iPhone17,2"
 #define TARGET_VERSION "18.6.2"
 #define TARGET_BUILD "22G100"
 

@@ -1,80 +1,79 @@
-# AGX-RW-iOS-PoC
+# AGX R/W iOS PoC
 
-A fixed-target iOS PoC for ClearSword kernel read/write and AGX firmware
-read/write research on A18 Pro.
-
-## Target
-
-| Device | Identifier | iOS | Build |
-| --- | --- | --- | --- |
-| iPhone 16 Pro Max | iPhone17,2 | 18.6.2 | 22G100 |
-
-The app refuses to run on other targets. Offsets are fixed for this build.
+AGX firmware read/write on A18 and A18 Pro iPhones running iOS 18.6.2
+build 22G100. ClearSword `pe_v3` provides the kernel read/write transport.
+Published in case it helps with SPTM research.
 
 ## PoCs
 
-The command-line modes correspond to the first two tests in the macOS repo.
-They are one iOS app/binary rather than separate executables.
+| Mode | What it does |
+| --- | --- |
+| default | Takes two stable snapshots of the current task's 16 KiB root table and copies the snapshot through Metal. |
+| `--acquire-only` | Acquires ClearSword KRW and verifies the kernel slide and current process, task and pmap. |
+| `--agx-self-test` | Verifies ordinary shared-buffer Metal read/write without running ClearSword. |
+| `--gfx-read-control` | Exercises the device-control copyout path with a fixed firmware source. |
+| `--gfx-read <gfx-va>` | Reads an aligned 64-bit value from the mapped main-firmware range. |
+| `--gfx-write-control` | Writes a marker through DropMDSID, verifies it through the CPU alias, then restores the modified fields. |
+| `--gfx-write-panic` | Writes through DropMDSID to the panic target. |
 
-| macOS test | iOS mode | Status on iPhone17,2 / 22G100 |
+`--acquire-only` has completed twice consecutively on iPhone17,2. The Metal
+self-test and `--gfx-write-control` also work on that hardware. The privileged
+read modes are implemented but have not completed a fresh end-to-end hardware
+run after the current ClearSword acquisition changes.
+
+ClearSword prepares the kernel transport, and AGX firmware performs the GFX
+virtual source reads and target writes. This is not standalone physical
+read/write or an SPTM bypass.
+
+## Hardware
+
+The included profile is for iOS 18.6.2 build 22G100:
+
+| Hardware | Identifier | Status |
 | --- | --- | --- |
-| `gfx-read-poc control` | `--gfx-read-control` | Implemented. ClearSword acquisition is now verified; the privileged read control still needs a fresh device run. |
-| `gfx-read-poc read <gfx-va>` | `--gfx-read <gfx-va>` | Implemented for aligned addresses in the mapped main-firmware range; not yet run because the control must pass first. |
-| `gfx-write-poc` control | `--gfx-write-control` | Verified on hardware. Two firmware-originated 32-bit writes produced `0x4141414141414141` through the CPU alias, then all scratch and host fields were restored. |
-| `gfx-write-poc` panic | `--gfx-write-panic` | Implemented as an explicit panic mode; not run automatically. |
-| `gfx-auth-call-poc` | — | Not ported. |
-| `gfx-pac-reuse-poc` | — | Not ported. |
-| `micro-ppl-ttbr1-probe` | — | Not ported. |
+| iPhone 16 Pro | iPhone17,1 | Static only |
+| iPhone 16 Pro Max | iPhone17,2 | Works on hardware |
+| iPhone 16 | iPhone17,3 | Static only |
+| iPhone 16 Plus | iPhone17,4 | Static only |
 
-The write path uses the 22G100 `DropMDSID` object chain, validates the target
-objects and method bytes, builds an `IOSurfaceAddressRanges` MDSID table, and
-submits ordinary AGX command buffers. The read path uses the 22G100
-device-control command type 30 and copyout-table layout.
+`Static only` means the profile is enabled but the PoC has not run on that
+hardware. Apple's 22G100 IPSWs contain byte-identical release kernelcaches and
+G17P firmware images for all four rows. The versioned ClearSword structure
+offsets in `clearsword/utils.c` follow Dopamine 3's ClearSword/libjailbreak
+values, with the additional A18 post-acquisition walk used by this PoC.
 
-Before the race, every mode also verifies ordinary shared-buffer Metal
-read/write. The default mode takes two stable KRW snapshots of the current
-task's 16 KiB root table and copies only that snapshot through Metal; it never
-maps or modifies the live type-17 root-table frame.
+The AGX kernel vtables and firmware addresses in `clearsword/agx.m` are a
+22G100 G17P profile. They are build and firmware specific, not universal
+ClearSword offsets. The static kernel address in `clearsword/poc.c` is also
+22G100-specific. Re-profile those constants before using another device or OS
+build whose kernelcache or G17P firmware differs.
 
-This is GFX virtual read/write research, not standalone physical read/write or
-an SPTM bypass. ClearSword acquisition itself is unstable on this target and
-can panic or reboot the phone before an AGX test starts.
+## Build
 
-`--acquire-only` has completed twice consecutively on the target after adding
-an immediate readback of each newly freed-and-sprayed page. Both runs verified
-the kernel slide and current process/task/pmap chain without entering the
-post-acquisition AGX test.
+Open `clearsword.xcodeproj`, select a development team, and build the
+`clearsword` scheme for a physical device.
 
-## Build check
+For an unsigned build check:
 
 ```sh
 xcodebuild -project clearsword.xcodeproj -scheme clearsword -sdk iphoneos \
   -configuration Release CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 ```
 
-The command-line `make binary` path also includes the Metal implementation and produces an ad-hoc-signed arm64 executable with the macOS `codesign` tool.
+The command-line build produces an ad-hoc-signed arm64 executable:
+
+```sh
+make binary
+```
 
 ## Run
 
-Open `clearsword.xcodeproj`, select your development team, and run it on the target device. The PoC starts once when the app opens.
-
-This race can panic or reboot the device. Reboot before another run if the app shows **Reboot required**.
-
-For a non-racing smoke test, launch the app with `--agx-self-test`. This runs only the ordinary shared-buffer AGX read/write check. The command-line binary accepts the same argument:
-
-```sh
-./clearsword.bin --agx-self-test
-```
-
-Use `--acquire-only` while tuning ClearSword. It verifies kernel acquisition and
-skips the post-acquisition AGX test. A successful run pins the modified sockets
-and therefore still requires a reboot before another attempt.
-
-Device test modes can be selected with `devicectl`:
+The app starts the default snapshot mode when opened. Launch another mode with
+`devicectl`:
 
 ```sh
 xcrun devicectl device process launch --console --terminate-existing \
-  --device <UDID> com.0xjohnnydev.agxrwios -- --gfx-write-control
+  --device <UDID> com.0xjohnnydev.agxrwios -- --acquire-only
 
 xcrun devicectl device process launch --console --terminate-existing \
   --device <UDID> com.0xjohnnydev.agxrwios -- --gfx-read-control
@@ -82,16 +81,23 @@ xcrun devicectl device process launch --console --terminate-existing \
 xcrun devicectl device process launch --console --terminate-existing \
   --device <UDID> com.0xjohnnydev.agxrwios -- \
   --gfx-read 0xfffffc0000000400
+
+xcrun devicectl device process launch --console --terminate-existing \
+  --device <UDID> com.0xjohnnydev.agxrwios -- --gfx-write-control
 ```
 
-Reboot between successful KRW runs because the parked transport is deliberately
-not reused. `--gfx-write-panic` is destructive and is never selected by the
-default UI or any control test.
+ClearSword is a race and can panic or reboot the phone. A successful KRW run
+pins the modified sockets, so reboot before another attempt. The
+`--gfx-write-panic` mode intentionally panics and reboots the device.
 
-## Credits
+## Credit
 
-- [ClearSword](https://github.com/TheRealClarity/ClearSword) by Clarity
-- [Cyanide](https://github.com/kolbicz/Cyanide) by Kolbicz for the A18 `pe_v3` path
-- DarkSword and CVE-2025-43520
+[Clarity](https://github.com/TheRealClarity) for
+[ClearSword](https://github.com/TheRealClarity/ClearSword),
+[opa334](https://github.com/opa334) for the
+[Dopamine 3](https://github.com/opa334/Dopamine/tree/3.x) offset source,
+[Kolbicz](https://github.com/kolbicz) for the A18 `pe_v3` path, and
+[AlfieCG](https://github.com/alfiecg24) for the original DropMDSID
+implementation in [Titan](https://github.com/alfiecg24/Titan).
 
-Licensed under the GNU AGPL v3 because this port includes Cyanide-derived code.
+DarkSword is CVE-2025-43520. This port is licensed under the GNU AGPL v3.

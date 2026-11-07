@@ -352,7 +352,7 @@ bool agx_shadow_test(uint64_t self_pmap) {
 }
 
 static uint64_t decode_smr_pointer(uint64_t raw) {
-    // iPhone17,2 / 22G100 values used by the proven SRD kmem_read_smrptr path.
+    // iPhone17,1-4 / 22G100 values used by the proven SRD kmem_read_smrptr path.
     uint64_t pointer = raw <= UINT64_C(0xfffffeffffffffff) ? strip_pac(raw) : raw;
     uint64_t base = SMR_BASE << (62 - SMR_T1SZ_BOOT);
     return (pointer & base) == 0 ? (pointer & ~UINT64_C(0x3fff)) | base

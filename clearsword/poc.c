@@ -36,7 +36,7 @@ pe_context_t g_ctx;
 #define PE_V3_SETTLE_SECONDS 3
 #define PE_V3_DEALLOC_PACE 2048
 #define STATIC_KERNEL_BASE 0xfffffff007004000ULL
-#define STATIC_RIPCBINFO 0xfffffff00ae6a790ULL  // raw_ip.c rip_attach, iPhone17,2 22G100
+#define STATIC_RIPCBINFO 0xfffffff00ae6a790ULL  // raw_ip.c rip_attach, iPhone17,1-4 22G100
 
 static bool g_pe_v3_hunt_budget_hit;
 
